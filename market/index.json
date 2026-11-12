@@ -154,11 +154,11 @@
       "versions": [
         {
           "version": "0.7.0",
-          "publishTimestamp": 1794472135,
+          "publishTimestamp": 1794472276,
           "source": {
             "type": "git",
             "url": "https://github.com/MrLukezy/dsh-codequest",
-            "commit": "873740f94d2aad6831730924ca57f8f5d202e323"
+            "commit": "b70903147ad5d8b0e5c10b9c6ed5e127a0d48168"
           },
           "engines": {}
         }
