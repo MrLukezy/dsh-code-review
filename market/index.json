@@ -1,0 +1,60 @@
+{
+  "format": 1,
+  "title": {
+    "en": "MrLukezy DSH Plugins",
+    "zh": "MrLukezy 的 DSH 插件"
+  },
+  "description": {
+    "en": "Plugins for the DeepSeek Harness, maintained by MrLukezy.",
+    "zh": "MrLukezy 维护的 DeepSeek Harness 插件。"
+  },
+  "metadata": {
+    "categories": {
+      "review": {
+        "title": { "en": "Code Review", "zh": "代码审查" }
+      }
+    },
+    "labels": {
+      "git": { "title": { "en": "Git", "zh": "Git" } },
+      "ai": { "title": { "en": "AI", "zh": "AI" } },
+      "ui": { "title": { "en": "Interface", "zh": "界面" } }
+    },
+    "sortKeys": {}
+  },
+  "plugins": [
+    {
+      "name": "dsh-code-diff-review",
+      "title": {
+        "en": "Code Change Review",
+        "zh": "代码修改审查"
+      },
+      "description": {
+        "en": "Open a side-by-side version-comparison window inside DSH: changed files and git history on the left, a two-pane diff in the middle, and a short per-hunk review note on hover (scope, what changed, risk, evidence). Generates a whole-change natural-language review and a logic relationship graph with AI.",
+        "zh": "在 DSH 里打开版本对比窗口：左侧是改动清单与 git 记录，中间是左右分栏 diff，鼠标悬浮任意改动块会弹出这一小段的审查说明（范围 / 改了什么 / 风险 / 依据）；右栏还能用 AI 生成整份自然语言审查和逻辑关系图。"
+      },
+      "author": "MrLukezy",
+      "homepage": "https://github.com/MrLukezy/dsh-code-review",
+      "repository": {
+        "url": "https://github.com/MrLukezy/dsh-code-review"
+      },
+      "metadata": {
+        "category": "review",
+        "keywords": ["code review", "diff", "git", "version comparison", "代码审查", "差异对比", "版本对比"],
+        "labels": ["git", "ai", "ui"],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "0.7.0",
+          "publishTimestamp": 1762953600,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/MrLukezy/dsh-code-review",
+            "commit": "33ce4b6ecf4e6fa63a2ccdb3040c8f982da6dcbe"
+          },
+          "engines": {}
+        }
+      ]
+    }
+  ]
+}
