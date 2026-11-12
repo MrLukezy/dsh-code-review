@@ -445,7 +445,8 @@ async function opRepos(payload, ctx) {
   if (requested) {
     const info = await stat(requested).catch(() => null)
     if (!info || !info.isDirectory()) throw new Error(`目录不存在：${requested}`)
-    return { root: requested, repos: await orderByRecentActivity(await scanRepos(requested)), scanned: [requested] }
+    const found = await orderByRecentActivity(await scanRepos(requested))
+    return withSessionContext(ctx, { root: requested, repos: found, scanned: [requested] }, found)
   }
 
   const roots = candidateRoots(ctx)
@@ -462,7 +463,140 @@ async function opRepos(payload, ctx) {
       repos.push(repo)
     }
   }
-  return { root: root || roots[0] || process.cwd(), repos: await orderByRecentActivity(repos), scanned: roots }
+  const ordered = await orderByRecentActivity(repos)
+  return withSessionContext(ctx, { root: root || roots[0] || process.cwd(), repos: ordered, scanned: roots }, ordered)
+}
+
+/**
+ * 把「当前会话在哪」一并回给前端，用来决定打开窗口时默认选哪个仓库。
+ * 会话目录可能本身就是仓库，也可能是多仓根目录，两种情况前端都要能处理。
+ */
+function withSessionContext(ctx, result, repos) {
+  const context = collectSessionContext(ctx, repos)
+  result.sessionDirs = context.dirs
+  result.sessionRepos = context.repos
+  return result
+}
+
+/** 取某个 live session 的有效工作目录。 */
+function sessionDirectory(session, workingDirectory) {
+  try {
+    if (workingDirectory) {
+      const current = workingDirectory.get(session)
+      if (typeof current === 'string' && current) return current
+    }
+  } catch (error) {
+    /* 会话已被回收，退回创建时的目录 */
+  }
+  const header = session && session.header
+  return header && typeof header.cwd === 'string' ? header.cwd : ''
+}
+
+/** 会话最后一条事件的时间，用来判断「哪个会话是当前正在用的」。 */
+function sessionLastActivity(session) {
+  try {
+    const seq = Number(session.seq)
+    if (!seq) return 0
+    const tail = session.snapshotEvents(Math.max(0, seq - 1))
+    const event = tail && tail.length ? tail[tail.length - 1] : null
+    return event && typeof event.time === 'number' ? event.time : 0
+  } catch (error) {
+    return 0
+  }
+}
+
+/**
+ * 汇总 live session 的工作目录，以及这些会话最近在工具调用里碰过的仓库。
+ * 只取根会话（子代理会话的目录不代表用户在哪），按最后活动时间倒序。
+ */
+function collectSessionContext(ctx, repos) {
+  const result = { dirs: [], repos: [] }
+  let sessions = []
+  try {
+    const store = ctx.get('sessions')
+    if (store && typeof store.list === 'function') sessions = store.list()
+  } catch (error) {
+    return result
+  }
+  if (!Array.isArray(sessions) || sessions.length === 0) return result
+
+  const roots = sessions.filter((session) => {
+    const header = session && session.header
+    if (!header) return false
+    if (header.parentSession) return false
+    if (header.origin === 'subagent') return false
+    return true
+  })
+  if (roots.length === 0) return result
+
+  const decorated = roots.map((session) => ({
+    session: session,
+    active: sessionLastActivity(session),
+    created: (session.header && session.header.createdAt) || 0,
+  }))
+  decorated.sort((left, right) => right.active - left.active || right.created - left.created)
+  const ordered = decorated.map((item) => item.session)
+
+  let workingDirectory
+  try {
+    workingDirectory = ctx.get('workingDirectory')
+  } catch (error) {
+    workingDirectory = undefined
+  }
+
+  const seenDirs = new Set()
+  for (const session of ordered) {
+    const directory = sessionDirectory(session, workingDirectory)
+    if (!directory) continue
+    const key = directory.toLowerCase()
+    if (seenDirs.has(key)) continue
+    seenDirs.add(key)
+    if (result.dirs.length < 8) result.dirs.push(directory)
+  }
+
+  const paths = repos.map((repo) => repo.path)
+  if (!paths.length) return result
+  // 工具参数是 JSON 字符串，Windows 路径在里面是转义过的（\\），正斜杠也要认
+  const needles = []
+  for (const repoPath of paths) {
+    const variants = [repoPath, repoPath.replace(/\\/g, '\\\\'), repoPath.replace(/\\/g, '/')]
+    for (const variant of variants) {
+      const needle = variant.toLowerCase()
+      if (needles.some((item) => item.path === repoPath && item.needle === needle)) continue
+      needles.push({ path: repoPath, needle: needle })
+    }
+  }
+  const counts = new Map()
+
+  // 只看当前（最后活动）那个会话的尾部事件：别的会话会把结果带偏
+  for (const session of ordered.slice(0, 1)) {
+    let events = []
+    try {
+      const tail = Math.max(0, Number(session.seq) - 240)
+      events = session.snapshotEvents(tail) || []
+    } catch (error) {
+      events = []
+    }
+    for (const event of events) {
+      if (!event || event.type !== 'tool/call') continue
+      const args = event.data && typeof event.data.arguments === 'string' ? event.data.arguments : ''
+      if (!args) continue
+      const haystack = args.toLowerCase()
+      // 一次调用只算最深的那个仓库，否则父目录会被重复计数
+      let best = null
+      for (const item of needles) {
+        if (haystack.indexOf(item.needle) < 0) continue
+        if (!best || item.needle.length > best.needle.length) best = item
+      }
+      if (!best) continue
+      counts.set(best.path, (counts.get(best.path) || 0) + 1)
+    }
+  }
+
+  result.repos = Array.from(counts.entries())
+    .sort((left, right) => right[1] - left[1])
+    .map((entry) => entry[0])
+  return result
 }
 
 /**

@@ -1,6 +1,6 @@
 {
   "name": "dsh-code-review",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "description": "代码修改审查：在 DSH 里打开版本对比窗口，左右分栏查看改动与 git 记录，悬浮查看每处改动块的审查说明，并用 AI 生成整份自然语言审查与逻辑关系图",
   "type": "module",

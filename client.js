@@ -401,23 +401,74 @@ window.__ModuleLoader__.load({
 
     function openWindow() {
       set({ open: true, error: '' })
-      if (!state.repos.length) loadRepos()
+      // 每次打开都重新对齐到当前会话所在的仓库，而不是沿用上次手选的那个
+      loadRepos(undefined, true)
     }
 
     function closeWindow() {
       set({ open: false })
     }
 
-    async function loadRepos(rootOverride) {
+    /**
+     * 从「当前会话在哪」推出默认仓库。
+     * 依次尝试：目录就是仓库 → 目录在某个仓库里面（取最近的祖先）
+     * → 会话最近在工具调用里碰过的仓库 → 目录下面最近活跃的仓库。
+     */
+    function resolveSessionRepo(repos, sessionDirs, sessionRepos) {
+      const normalize = (value) =>
+        String(value || '')
+          .replace(/\\/g, '/')
+          .replace(/\/+$/, '')
+          .toLowerCase()
+      const entries = repos.map((repo) => ({ repo: repo, key: normalize(repo.path) }))
+      const dirs = (Array.isArray(sessionDirs) ? sessionDirs : []).map(normalize).filter(Boolean)
+
+      const matchDirectory = (dir) => {
+        const exact = entries.find((entry) => entry.key === dir)
+        if (exact) return exact.repo.path
+        const ancestors = entries
+          .filter((entry) => dir.startsWith(entry.key + '/'))
+          .sort((left, right) => right.key.length - left.key.length)
+        return ancestors.length ? ancestors[0].repo.path : ''
+      }
+
+      // 1. 当前会话的目录本身就是仓库，或者就在某个仓库里面
+      const primary = dirs.length ? matchDirectory(dirs[0]) : ''
+      if (primary) return primary
+
+      // 2. 会话目录是多仓根：用当前会话最近在工具调用里碰得最多的仓库
+      for (const repoPath of Array.isArray(sessionRepos) ? sessionRepos : []) {
+        if (entries.some((entry) => entry.repo.path === repoPath)) return repoPath
+      }
+
+      // 3. 其它会话的目录
+      for (const dir of dirs.slice(1)) {
+        const hit = matchDirectory(dir)
+        if (hit) return hit
+      }
+
+      // 4. 当前会话目录下面最近活跃的仓库（后端已按 .git/index 排序）
+      if (dirs.length) {
+        const below = entries.find((entry) => entry.key.startsWith(dirs[0] + '/'))
+        if (below) return below.repo.path
+      }
+      return ''
+    }
+
+    async function loadRepos(rootOverride, followSession) {
       const explicit = typeof rootOverride === 'string' && rootOverride.trim() !== '' ? rootOverride.trim() : ''
       set({ busy: 'repos', error: '', repoError: '' })
       try {
         const data = await rpc('repos', explicit ? { root: explicit } : {})
         const repos = Array.isArray(data.repos) ? data.repos : []
+        const known = (path) => Boolean(path) && repos.some((repo) => repo.path === path)
+        const sessionRepo = explicit ? '' : resolveSessionRepo(repos, data.sessionDirs, data.sessionRepos)
         let cwd = state.cwd
-        if (!cwd || !repos.some((repo) => repo.path === cwd)) {
+        if (followSession && sessionRepo) {
+          cwd = sessionRepo
+        } else if (!known(cwd)) {
           const remembered = readMemory()
-          cwd = repos.some((repo) => repo.path === remembered) ? remembered : repos[0] ? repos[0].path : ''
+          cwd = sessionRepo || (known(remembered) ? remembered : repos[0] ? repos[0].path : '')
         }
         set({ repos: repos, root: data.root || '', busy: '' })
         if (cwd) await selectRepo(cwd)
@@ -685,7 +736,7 @@ window.__ModuleLoader__.load({
     // =====================================================================
 
     /** 前端版本号，与 package.json 的 version 保持一致；窗口标题旁会显示，便于确认加载的是哪一版。 */
-    const CLIENT_VERSION = '0.5.0'
+    const CLIENT_VERSION = '0.6.0'
 
     /** 把 CSS 颜色解析成 [r, g, b]。 */
     function parseCssColor(value) {
