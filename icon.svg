@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Code change review">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#1F2A44"/>
+  <path d="M15 20v24" stroke="#7FA8FF" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="15" cy="18" r="4" fill="#7FA8FF"/>
+  <circle cx="15" cy="46" r="4" fill="#7FA8FF"/>
+  <path d="M42 22c0 8-9 9-17 10.5" stroke="#7FA8FF" stroke-width="3" stroke-linecap="round" fill="none"/>
+  <circle cx="44" cy="20" r="4" fill="#7FA8FF"/>
+  <rect x="28" y="30" width="26" height="9" rx="3" fill="#2FBF7F" opacity="0.92"/>
+  <path d="M34 34.5h14M41 31v7" stroke="#0E1A2E" stroke-width="2.4" stroke-linecap="round"/>
+  <rect x="28" y="43" width="26" height="9" rx="3" fill="#F26D6D" opacity="0.92"/>
+  <path d="M34 47.5h14" stroke="#0E1A2E" stroke-width="2.4" stroke-linecap="round"/>
+</svg>

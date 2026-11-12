@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Code Change Review",
+    "description": "Version-comparison window with git history, hover notes (basis, reference code, change logic, bindings) and a logic relationship graph."
+  }
+}
