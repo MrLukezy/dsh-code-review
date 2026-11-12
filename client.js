@@ -1,5 +1,5 @@
 /**
- * dsh-code-review — 代码修改审查插件（浏览器半区）。
+ * dsh-code-diff-review — 代码修改审查插件（浏览器半区）。
  *
  * 两个 slot：
  *   - `sidebar.footer.action`：侧边栏底部的“版本审查”入口。
@@ -9,7 +9,8 @@
  * Client 包，只用 React 与宿主主题 token。
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-code-review',
+  // 必须与 package.json 的 name 一致：Host 的 clientModules 按包名对外提供模块
+  id: 'dsh-code-diff-review',
   factory(require) {
     const React = require('react')
     const h = React.createElement

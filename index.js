@@ -17,7 +17,7 @@ import { execFile } from 'node:child_process'
 import { readFile, readdir, stat } from 'node:fs/promises'
 import path from 'node:path'
 
-export const name = 'dsh-code-review'
+export const name = 'dsh-code-diff-review'
 
 /** 请求体上限：diff / 分析请求都很小，4MB 足够。 */
 const MAX_BODY_BYTES = 4 * 1024 * 1024
