@@ -20,6 +20,11 @@ window.__ModuleLoader__.load({
     const NS = 'dshCodeReview'
     /** 记住上次选的仓库，下次打开直接回到那里。 */
     const MEMORY_KEY = 'dsh-code-review.repo'
+    /**
+     * apply 时的 ctx。组件是模块级函数，拿不到 apply 的形参，
+     * 所以在这里留一份引用，供「交给 AI」这类需要访问宿主服务的操作使用。
+     */
+    let pluginCtx = null
 
     // =====================================================================
     // 基础工具
@@ -737,7 +742,7 @@ window.__ModuleLoader__.load({
     // =====================================================================
 
     /** 前端版本号，与 package.json 的 version 保持一致；窗口标题旁会显示，便于确认加载的是哪一版。 */
-    const CLIENT_VERSION = '0.7.1'
+    const CLIENT_VERSION = '0.8.0'
 
     /** 把 CSS 颜色解析成 [r, g, b]。 */
     function parseCssColor(value) {
@@ -1149,6 +1154,154 @@ window.__ModuleLoader__.load({
       }
       if (hardcoded.length) risks.push('新增硬编码数值 ' + Array.from(new Set(hardcoded)).slice(0, 4).join('、'))
       return risks
+    }
+
+    // =====================================================================
+    // 「交给 AI」：把一处改动的审查结论送进一个新会话
+    // =====================================================================
+
+    /** 空工作区列表的稳定引用，避免每次渲染都新建数组。 */
+    const NO_WORKSPACES = []
+
+    /**
+     * 宿主的 useWorkspaces 由 slot 注入。这里包一层：万一宿主没注入，
+     * 也只是拿不到工作区列表，不会让整个审查窗口渲染失败。
+     * 判断条件是注入的常量属性，渲染期间不会变，所以 hook 顺序是稳定的。
+     */
+    function useWorkspaceItems(props) {
+      const hook = props && props.useWorkspaces
+      return typeof hook === 'function' ? hook((value) => value.items) : NO_WORKSPACES
+    }
+
+    /** 路径归一：统一分隔符、去掉末尾斜杠、转小写，用于和宿主工作区比对。 */
+    function normalizePathForMatch(value) {
+      return String(value || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+    }
+
+    /** 找出覆盖这个仓库的工作区：优先精确匹配，其次最近的父目录。 */
+    function workspaceForPath(items, repoPath) {
+      const target = normalizePathForMatch(repoPath)
+      if (!target || !Array.isArray(items)) return null
+      let best = null
+      let bestLength = -1
+      for (const item of items) {
+        const candidate = normalizePathForMatch(item && item.path)
+        if (!candidate) continue
+        const covers = target === candidate || target.indexOf(candidate + '/') === 0
+        if (covers && candidate.length > bestLength) {
+          best = item
+          bestLength = candidate.length
+        }
+      }
+      return best
+    }
+
+    /**
+     * 把这一处改动的审查结论拼成一段可直接编辑的提示词。
+     * 只带定位、改动行、风险、依据和相关代码，不贴整份 diff。
+     */
+    function buildRiskPrompt(file, hunk, annotation, blame, review, ruleRisks) {
+      const lines = []
+      const start = hunk.newStart
+      const end = start + Math.max(0, hunk.newCount - 1)
+      lines.push('请帮我处理下面这处改动里的风险。')
+      lines.push('')
+      lines.push('文件：' + file)
+      lines.push('行：' + start + '-' + end + '（新增 ' + hunk.added.length + ' 行，删除 ' + hunk.removed.length + ' 行）')
+
+      const removed = hunk.rows.filter((row) => row.t === '-').slice(0, 8)
+      const added = hunk.rows.filter((row) => row.t === '+').slice(0, 8)
+      if (removed.length || added.length) {
+        lines.push('')
+        lines.push('改动内容：')
+        for (const row of removed) lines.push('- ' + String(row.text || '').trim())
+        for (const row of added) lines.push('+ ' + String(row.text || '').trim())
+      }
+
+      const what = review && review.what ? String(review.what) : ''
+      if (what) {
+        lines.push('')
+        lines.push('这段改动：')
+        lines.push(what)
+      }
+
+      const risk = review && review.risk ? String(review.risk) : ''
+      const extraRisks = Array.isArray(ruleRisks) ? ruleRisks : []
+      if (risk || extraRisks.length) {
+        lines.push('')
+        lines.push('风险：')
+        if (risk) lines.push(risk)
+        for (const item of extraRisks) lines.push('- ' + item)
+      }
+
+      if (annotation && annotation.basis) {
+        lines.push('')
+        lines.push('依据：' + String(annotation.basis))
+      }
+
+      const commit = blame && blame.fileCommit ? blame.fileCommit : null
+      if (commit && commit.short) {
+        lines.push('')
+        lines.push('最近一次改动：' + commit.short + ' ' + (commit.summary || '') + '（' + (commit.author || '') + '）')
+      }
+
+      if (annotation && Array.isArray(annotation.references) && annotation.references.length) {
+        lines.push('')
+        lines.push('相关代码：')
+        for (const reference of annotation.references.slice(0, 3)) {
+          const line = Array.isArray(reference.lines) && reference.lines.length ? ':' + reference.lines[0] : ''
+          const note = reference.note ? '（' + reference.note + '）' : ''
+          lines.push('- ' + reference.path + line + note)
+        }
+      }
+
+      lines.push('')
+      lines.push('先判断这个风险是否成立；如果成立，给出最小改动的修复方案，并说明为什么这样改是安全的。')
+      return lines.join('\n').slice(0, 4000)
+    }
+
+    /**
+     * 在一个新会话里打开这段内容：文本进输入框，不自动发送，等用户自己改或发。
+     * 仓库没有对应工作区时先建一个，保证新会话落在同一个目录。
+     */
+    async function sendReviewToNewChat(prompt, workspaceItems) {
+      const text = String(prompt || '').trim()
+      if (!text) return { ok: false, reason: 'empty' }
+      const ctx = pluginCtx
+      if (!ctx || typeof ctx.get !== 'function') return { ok: false, reason: 'no-ctx' }
+      const uiWorkspace = ctx.get('uiWorkspace')
+      if (!uiWorkspace || typeof uiWorkspace.startSession !== 'function') return { ok: false, reason: 'no-ui-workspace' }
+
+      const repoPath = state.cwd || ''
+      let target = workspaceForPath(workspaceItems, repoPath)
+      if (!target && repoPath) {
+        const controller = ctx.get('workspaces')
+        if (controller && typeof controller.create === 'function') {
+          try {
+            target = await controller.create({ path: repoPath })
+          } catch (error) {
+            return { ok: false, reason: 'create-failed', message: String((error && error.message) || error) }
+          }
+        }
+      }
+      if (!target || !target.workspaceId) return { ok: false, reason: 'no-workspace' }
+
+      try {
+        // append：不覆盖用户已经打好的草稿；草稿为空时效果等同替换
+        uiWorkspace.startSession(target.workspaceId, { prompt: text, whenDraftExists: 'append' })
+      } catch (error) {
+        return { ok: false, reason: 'start-failed', message: String((error && error.message) || error) }
+      }
+      closeWindow()
+      return { ok: true }
+    }
+
+    /** 把失败原因翻成一句能看懂的话。 */
+    function sendErrorText(t, result) {
+      const reason = result && result.reason
+      if (reason === 'no-ui-workspace') return tt(t, 'sendNoService')
+      if (reason === 'no-workspace' || reason === 'create-failed') return tt(t, 'sendNoWorkspace')
+      return tt(t, 'sendFailed') + ' ' + String((result && (result.message || result.reason)) || '')
     }
 
     /**
@@ -1606,8 +1759,9 @@ window.__ModuleLoader__.load({
     function ReviewOverlay(props) {
       const t = props.t
       const snapshot = useStore()
+      const workspaceItems = useWorkspaceItems(props)
       if (!snapshot.open) return null
-      return h(ReviewBoundary, { t: t }, h(ReviewWindow, { t: t, snapshot: snapshot }))
+      return h(ReviewBoundary, { t: t }, h(ReviewWindow, { t: t, snapshot: snapshot, workspaceItems: workspaceItems }))
     }
 
     /**
@@ -1795,7 +1949,7 @@ window.__ModuleLoader__.load({
           ),
           snapshot.busy ? h('div', { className: 'dcr-progress' }) : null,
         ),
-        tip ? h(HoverTip, { t: t, tip: tip, snapshot: snapshot, cancelHide: cancelHide, scheduleHide: scheduleHide }) : null,
+        tip ? h(HoverTip, { t: t, tip: tip, snapshot: snapshot, cancelHide: cancelHide, scheduleHide: scheduleHide, workspaceItems: props.workspaceItems }) : null,
       )
     }
 
@@ -2243,6 +2397,7 @@ window.__ModuleLoader__.load({
       const tip = props.tip
       const snapshot = props.snapshot
       const key = tip.key
+      const [sendState, setSendState] = useState('')
       const annotation = hunkAnnotation(tip.file, tip.hunk)
       const blame = snapshot.blame[key]
       const analysis = snapshot.analyze[key]
@@ -2254,6 +2409,29 @@ window.__ModuleLoader__.load({
         total: tip.total,
         busy: Boolean(reviewEntry && reviewEntry.busy),
       })
+
+      // 只有真的识别出风险时才给「交给 AI」，没风险时这个按钮没有意义
+      const riskSection = sections.filter((section) => section.key === 'risk')[0]
+      const hasRisk = Boolean(riskSection && riskSection.items.some((item) => item.kind === 'warn'))
+      const riskPrompt = hasRisk
+        ? buildRiskPrompt(
+            tip.file,
+            tip.hunk,
+            annotation,
+            blame,
+            review,
+            review && review.risk ? [] : risksFromRules(tip.hunk),
+          )
+        : ''
+
+      const sendToChat = useCallback(() => {
+        if (!riskPrompt || sendState === 'sending') return
+        setSendState('sending')
+        Promise.resolve(sendReviewToNewChat(riskPrompt, props.workspaceItems)).then((result) => {
+          if (result && result.ok) return
+          setSendState(sendErrorText(t, result))
+        })
+      }, [riskPrompt, sendState, t, props.workspaceItems])
 
       const width = 380
       const margin = 12
@@ -2313,6 +2491,23 @@ window.__ModuleLoader__.load({
                 item.text ? h('code', { className: 'dcr-tip-code-text' }, item.text) : null,
               )
             }),
+            section.key === 'risk' && hasRisk
+              ? h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'dcr-tip-action',
+                    disabled: sendState === 'sending',
+                    title: tt(t, 'tipSendHint'),
+                    onClick: sendToChat,
+                  },
+                  icon('spark', 13),
+                  h('span', null, tt(t, sendState === 'sending' ? 'tipSending' : 'tipSendToChat')),
+                )
+              : null,
+            section.key === 'risk' && sendState && sendState !== 'sending'
+              ? h('div', { className: 'dcr-tip-muted' }, sendState)
+              : null,
           ),
         ),
         annotation
@@ -3165,6 +3360,9 @@ window.__ModuleLoader__.load({
 .dcr-tip-text{color:var(--dsw-alias-label-primary)}
 .dcr-tip-warn{color:var(--dsw-alias-state-warn-primary)}
 .dcr-tip-muted{color:var(--dsw-alias-label-secondary)}
+.dcr-tip-action{display:inline-flex;align-items:center;gap:5px;margin-top:6px;padding:3px 9px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-brand-primary);font-size:11.5px;font-family:inherit;cursor:pointer;transition:background .12s,border-color .12s}
+.dcr-tip-action:hover{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2)}
+.dcr-tip-action:disabled{opacity:.6;cursor:default}
 .dcr-tip-commit{display:flex;gap:7px;align-items:flex-start;margin-top:3px}
 .dcr-tip-commit-body{display:flex;flex-direction:column;gap:1px;min-width:0}
 .dcr-tip-commit-summary{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -3244,6 +3442,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots', 'locale'],
       apply(ctx) {
+        pluginCtx = ctx
         ctx.effect(() => ctx.locale.register(NS, {
           zh: {
             title: '代码修改审查',
@@ -3344,6 +3543,12 @@ window.__ModuleLoader__.load({
             tipLogic: '修改逻辑',
             tipBindings: '绑定关系',
             tipFooter: '在 .dsh/code-review.json 补充人工标注可获得更完整的说明。',
+            tipSendToChat: '交给 AI 处理',
+            tipSending: '正在打开新会话…',
+            tipSendHint: '新建一个对话，把这一处的审查结论填进输入框，改完再发',
+            sendNoService: '当前环境没有提供新建会话的能力。',
+            sendNoWorkspace: '找不到这个仓库对应的工作区，无法新建会话。',
+            sendFailed: '新建会话失败：',
             pendingChange: '这些行是工作区里尚未提交的改动。',
             lastFileCommit: '该文件上一次提交',
             noBasis: '暂无提交或标注信息。',
@@ -3474,6 +3679,12 @@ window.__ModuleLoader__.load({
             tipLogic: 'Change logic',
             tipBindings: 'Bindings',
             tipFooter: 'Add manual annotations in .dsh/code-review.json for richer notes.',
+            tipSendToChat: 'Hand to AI',
+            tipSending: 'Opening a new chat…',
+            tipSendHint: 'Open a new chat with this hunk review filled into the composer, ready to edit or send',
+            sendNoService: 'This environment offers no way to start a new chat.',
+            sendNoWorkspace: 'No workspace covers this repository, so a new chat cannot be started.',
+            sendFailed: 'Could not start a new chat: ',
             pendingChange: 'These lines are uncommitted working-tree changes.',
             lastFileCommit: 'Last commit touching this file',
             noBasis: 'No commit or annotation information.',

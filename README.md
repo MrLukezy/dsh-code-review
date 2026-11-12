@@ -24,7 +24,7 @@ https://raw.githubusercontent.com/MrLukezy/dsh-code-review/main/market/index.jso
 **方式二：直接从 GitHub 装**
 
 ```
-plugin_manager install_bundle  github:MrLukezy/dsh-code-review#v0.7.1
+plugin_manager install_bundle  github:MrLukezy/dsh-code-review#v0.8.0
 ```
 
 **方式三：本地目录**
