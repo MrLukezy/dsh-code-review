@@ -1,18 +1,37 @@
-# dsh-code-review
+# dsh-code-diff-review
 
 在 DeepSeek Harness 的 Web 界面里打开一个「代码修改审查」窗口：左边是改动清单和 git 记录，
 中间是版本对比 diff，鼠标悬浮任意变更段会弹出这一段的简短审查（范围 / 改了什么 / 风险 / 依据），
 右栏还能生成这次改动的逻辑关系图和整份自然语言审查。
 
+> 包名是 `dsh-code-diff-review`。npm 上的 `dsh-code-review` 是别人的另一个插件，本仓库与它无关；
+> GitHub 仓库名仍叫 `dsh-code-review`。
+
 ## 安装
 
 需要 DeepSeek Harness（`dsh`）和一个可用的模型配置（AI 审查用）。插件不依赖任何第三方包。
 
+**方式一：从插件市场装**（推荐）
+
+在 Harness 的「发现」页签里搜索 `代码修改审查` 或 `code review`。市场索引地址：
+
+```
+https://raw.githubusercontent.com/MrLukezy/dsh-code-review/main/market/index.json
+```
+
+把这个地址加到插件市场的索引源里即可（见下方「插件市场索引」）。
+
+**方式二：直接从 GitHub 装**
+
+```
+plugin_manager install_bundle  github:MrLukezy/dsh-code-review#v0.7.0
+```
+
+**方式三：本地目录**
+
 ```bash
 git clone https://github.com/MrLukezy/dsh-code-review.git
 ```
-
-然后在 Harness 里把**克隆下来的目录**作为 bundle 装上（路径用绝对路径）：
 
 ```
 plugin_manager install_bundle  <克隆目录的绝对路径>
@@ -23,6 +42,23 @@ plugin_manager install_bundle  <克隆目录的绝对路径>
 - `plugin_manager list_plugins` 里是否有 `code-review`，状态是否 enabled；
 - 插件要求宿主提供 `webServer` 服务（Web 版 Harness 默认有）；
 - 浏览器端改动需要刷新页面才生效，宿主端改动需要把插件 disable/enable 一次。
+
+## 插件市场索引
+
+仓库根目录的 `market/index.json` 就是一份格式 1 的市场索引。要让它出现在 Harness 的「发现」页签：
+
+1. 启用实验性组合包 `@deepseek-ai/dsh-experimental-plugin-market-bundle`；
+2. 在该插件市场的配置里加上索引地址：
+
+```yaml
+- id: plugin-market
+  name: "@deepseek-ai/dsh-plugin-market"
+  config:
+    indexes:
+      - https://raw.githubusercontent.com/MrLukezy/dsh-code-review/main/market/index.json
+```
+
+索引里的每个版本用 `source: { type: git, url, commit }` 钉在一个提交上，所以升级要改 `commit` 和 `version`。
 
 ## 依赖
 

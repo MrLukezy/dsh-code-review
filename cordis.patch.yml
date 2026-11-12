@@ -3,4 +3,4 @@
 # browser half (review window + sidebar entry).
 - insert:
     - id: code-review
-      name: dsh-code-review
+      name: dsh-code-diff-review

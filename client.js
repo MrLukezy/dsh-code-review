@@ -736,7 +736,7 @@ window.__ModuleLoader__.load({
     // =====================================================================
 
     /** 前端版本号，与 package.json 的 version 保持一致；窗口标题旁会显示，便于确认加载的是哪一版。 */
-    const CLIENT_VERSION = '0.6.0'
+    const CLIENT_VERSION = '0.7.0'
 
     /** 把 CSS 颜色解析成 [r, g, b]。 */
     function parseCssColor(value) {
