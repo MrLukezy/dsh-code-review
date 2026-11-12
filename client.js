@@ -254,6 +254,8 @@ window.__ModuleLoader__.load({
       models: null,
       modelChoice: '',
       hunkReviews: {},
+      /** 风险复核结果：{ hunk 缓存键: { busy, verdict, reason, ... } }，跨悬浮保留。 */
+      riskChecks: {},
       autoHunkReview: true,
       history: { path: '', commits: [], busy: false },
       /** 已审阅的文件：{ 仓库路径: [文件路径, ...] }，只影响左侧列表的显示，不影响能否查看。 */
@@ -584,8 +586,12 @@ window.__ModuleLoader__.load({
         const data = await rpc('hunkReview', {
           cwd: state.cwd,
           path: file,
+          rev: state.selection && state.selection.rev ? state.selection.rev : undefined,
           hunks: blocks.slice(0, 8).map((block) => ({
             header: block.header,
+            // 行号是 Host 读源码上下文的依据，缺了就只能拿到 diff
+            newStart: block.newStart,
+            newCount: block.newCount,
             rows: block.rows.map((row) => ({ t: row.t, text: row.text })),
           })),
         })
@@ -926,6 +932,41 @@ window.__ModuleLoader__.load({
             emit()
           })
       }
+    }
+
+    /**
+     * 让模型复核这一处改动：判定已经给出的风险到底成不成立。
+     * 结果按 hunk 缓存，移开鼠标再悬浮回来直接显示，不会重复调用。
+     */
+    function requestRiskCheck(file, hunk, claimed, what) {
+      const key = hunkKey(file, hunk)
+      const current = state.riskChecks[key]
+      if (current && (current.busy || current.verdict || current.error)) return
+      const selection = state.selection
+      const rev = selection && selection.rev ? selection.rev : undefined
+      state.riskChecks[key] = { busy: true }
+      emit()
+      rpc('riskCheck', {
+        cwd: state.cwd,
+        path: file,
+        rev: rev,
+        risk: String(claimed || ''),
+        what: String(what || ''),
+        hunk: {
+          header: hunk.header,
+          newStart: hunk.newStart,
+          newCount: hunk.newCount,
+          rows: Array.isArray(hunk.rows) ? hunk.rows.slice(0, 80) : [],
+        },
+      })
+        .then((data) => {
+          state.riskChecks[key] = Object.assign({ busy: false }, data)
+          emit()
+        })
+        .catch((error) => {
+          state.riskChecks[key] = { busy: false, error: String((error && error.message) || error) }
+          emit()
+        })
     }
 
     /** 为关系图把整份文件的 hunk 都分析一遍（最多 5 段）。 */
@@ -1305,19 +1346,90 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 组装悬浮提示：审查范围 + 这段改了什么 + 风险 + 依据 + 相关定义。
-     * 模型简评（info.review）优先，没回来时用规则兜底。
+     * 组装悬浮提示。
+     * 顺序按「先结论、再对照、再场景、最后细节」排：
+     *   结论 → 之前/之后 → 场景 → 影响面 → 风险 →（折叠）审查范围 / 依据 / 相关定义。
+     * group 为 'detail' 的段落默认收起，避免一屏全是背景信息。
      */
     function buildTipSections(t, file, hunk, annotation, blame, analysis, extra) {
       const sections = []
       const info = extra || {}
       const index = typeof info.index === 'number' ? info.index : 0
       const total = typeof info.total === 'number' ? info.total : 1
+      const review = info.review || null
 
-      // ---- 审查范围：先讲清楚这一条覆盖哪些行 ----
+      // ---- 结论：先说这处改动带来什么后果 ----
+      if (review && (review.summary || review.verdict)) {
+        const verdict = review.verdict === 'ok' || review.verdict === 'problem' ? review.verdict : 'attention'
+        sections.push({
+          key: 'verdict',
+          label: '',
+          group: 'main',
+          items: [{ kind: 'verdict', verdict: verdict, value: String(review.summary || '') }],
+        })
+      }
+
+      // ---- 之前 → 之后：用行为对照代替散文 ----
+      const before = review && review.before ? String(review.before) : ''
+      const after = review && review.after ? String(review.after) : ''
+      if (before || after) {
+        const items = []
+        if (before) items.push({ kind: 'pair', mark: '-', value: before })
+        if (after) items.push({ kind: 'pair', mark: '+', value: after })
+        sections.push({ key: 'change', label: tt(t, 'tipChange'), items: items, group: 'main' })
+      }
+
+      // ---- 没有结构化对照时，退回原来的「这段改了什么」 ----
+      if (!before && !after) {
+        const what = []
+        if (review && review.what) what.push({ kind: 'text', value: String(review.what) })
+        else {
+          if (info.busy) what.push({ kind: 'muted', value: tt(t, 'tipReviewPending') })
+          for (const line of summarizeHunkRules(hunk)) what.push({ kind: 'text', value: line })
+        }
+        sections.push({ key: 'what', label: tt(t, 'tipWhat'), items: what, group: 'main' })
+      }
+
+      // ---- 场景：具体到能照着复现，没有就不占位置 ----
+      const scenario = review && review.scenario ? review.scenario : null
+      const scenarioItems = []
+      if (scenario) {
+        if (scenario.precondition) scenarioItems.push({ kind: 'text', value: tt(t, 'tipScenarioPre') + '：' + scenario.precondition })
+        if (scenario.steps) scenarioItems.push({ kind: 'text', value: tt(t, 'tipScenarioSteps') + '：' + scenario.steps })
+        if (scenario.result) scenarioItems.push({ kind: 'warn', value: tt(t, 'tipScenarioResult') + '：' + scenario.result })
+      }
+      if (scenarioItems.length) {
+        sections.push({ key: 'scenario', label: tt(t, 'tipScenario'), items: scenarioItems, group: 'main' })
+      }
+
+      // ---- 影响面 ----
+      if (review && review.impact) {
+        sections.push({
+          key: 'impact',
+          label: tt(t, 'tipImpact'),
+          items: [{ kind: 'text', value: String(review.impact) }],
+          group: 'main',
+        })
+      }
+
+      // ---- 风险 ----
+      const risk = []
+      if (review && review.risk) risk.push({ kind: 'warn', value: String(review.risk) })
+      else if (!review) for (const line of risksFromRules(hunk)) risk.push({ kind: 'warn', value: line })
+      sections.push({
+        key: 'risk',
+        label: tt(t, 'tipRisk'),
+        group: 'main',
+        items: risk.length ? risk : [{ kind: 'muted', value: tt(t, 'tipNoRisk') }],
+      })
+
+      // ---- 以下都是细节，默认折叠 ----
+
+      // 审查范围：这一条覆盖哪些行
       sections.push({
         key: 'scope',
         label: tt(t, 'tipScopeLabel'),
+        group: 'detail',
         items: [
           {
             kind: 'text',
@@ -1333,27 +1445,7 @@ window.__ModuleLoader__.load({
         ],
       })
 
-      // ---- 这段改了什么 ----
-      const what = []
-      if (info.review && info.review.what) {
-        what.push({ kind: 'text', value: String(info.review.what) })
-      } else {
-        if (info.busy) what.push({ kind: 'muted', value: tt(t, 'tipReviewPending') })
-        for (const line of summarizeHunkRules(hunk)) what.push({ kind: 'text', value: line })
-      }
-      sections.push({ key: 'what', label: tt(t, 'tipWhat'), items: what })
-
-      // ---- 风险 ----
-      const risk = []
-      if (info.review && info.review.risk) risk.push({ kind: 'warn', value: String(info.review.risk) })
-      else for (const line of risksFromRules(hunk)) risk.push({ kind: 'warn', value: line })
-      sections.push({
-        key: 'risk',
-        label: tt(t, 'tipRisk'),
-        items: risk.length ? risk : [{ kind: 'muted', value: tt(t, 'tipNoRisk') }],
-      })
-
-      // ---- 依据 ----
+      // 依据
       const basis = []
       if (annotation && annotation.basis) basis.push({ kind: 'text', value: String(annotation.basis) })
       if (blame && blame.loading) basis.push({ kind: 'muted', value: tt(t, 'loading') })
@@ -1387,10 +1479,11 @@ window.__ModuleLoader__.load({
       sections.push({
         key: 'basis',
         label: tt(t, 'tipBasis'),
+        group: 'detail',
         items: basis.length ? basis : [{ kind: 'muted', value: tt(t, 'noBasis') }],
       })
 
-      // ---- 相关定义 + 绑定文件（各最多 2 条，避免又变成 grep 转储） ----
+      // 相关定义 + 绑定文件（各最多 2 条，避免又变成 grep 转储）
       const defs = []
       if (annotation && Array.isArray(annotation.references)) {
         for (const reference of annotation.references.slice(0, 2)) {
@@ -1416,7 +1509,7 @@ window.__ModuleLoader__.load({
           })
         }
       }
-      if (defs.length) sections.push({ key: 'defs', label: tt(t, 'tipDefs'), items: defs })
+      if (defs.length) sections.push({ key: 'defs', label: tt(t, 'tipDefs'), items: defs, group: 'detail' })
 
       if (analysis && !analysis.loading && !annotation) {
         const files = new Map()
@@ -1431,6 +1524,7 @@ window.__ModuleLoader__.load({
           sections.push({
             key: 'bound',
             label: tt(t, 'tipBoundLabel'),
+            group: 'detail',
             items: [{ kind: 'muted', value: tt(t, 'tipBoundFiles', { n: top.length, files: top.map((entry) => baseName(entry[0])).join('、') }) }],
           })
         }
@@ -2392,12 +2486,99 @@ window.__ModuleLoader__.load({
     // 组件：悬浮提示
     // =====================================================================
 
+    /** 风险复核结果：结论标签 + 理由 + 依据 + 建议。 */
+    function RiskVerdict(props) {
+      const t = props.t
+      const result = props.result
+      if (!result) return null
+      if (result.error) return h('div', { className: 'dcr-tip-muted' }, tt(t, 'checkFailed') + ' ' + result.error)
+      const verdict = result.verdict === 'real' || result.verdict === 'false_alarm' ? result.verdict : 'unclear'
+      const labelKey = verdict === 'real' ? 'verdictReal' : verdict === 'false_alarm' ? 'verdictFalseAlarm' : 'verdictUnclear'
+      const confidence = result.confidence
+        ? tt(t, 'confidence' + result.confidence.charAt(0).toUpperCase() + result.confidence.slice(1))
+        : ''
+      // 判不出来多半是因为片段看不全：这时候直接给一条「交给 AI 处理」的出路，
+      // 而不是让用户自己回头去找上面那个按钮
+      const uncertain = verdict === 'unclear'
+      return h(
+        'div',
+        { className: 'dcr-tip-verdict' },
+        h(
+          'div',
+          { className: 'dcr-tip-verdict-head' },
+          h('span', { className: cx('dcr-verdict', 'dcr-verdict-' + verdict) }, tt(t, labelKey)),
+          confidence ? h('span', { className: 'dcr-tip-verdict-conf' }, confidence) : null,
+          result.ms ? h('span', { className: 'dcr-tip-verdict-ms' }, (result.ms / 1000).toFixed(1) + 's') : null,
+        ),
+        result.reason ? h('div', { className: 'dcr-tip-text' }, result.reason) : null,
+        result.evidence ? h('div', { className: 'dcr-tip-muted' }, tt(t, 'verdictEvidence') + '：' + result.evidence) : null,
+        result.action ? h('div', { className: 'dcr-tip-muted' }, tt(t, 'verdictAction') + '：' + result.action) : null,
+        uncertain
+          ? h(
+              'div',
+              { className: 'dcr-tip-verdict-hint' },
+              h('span', { className: 'dcr-tip-verdict-hint-text' }, tt(t, 'verdictUnclearHint')),
+              props.onSend
+                ? h(
+                    'button',
+                    { type: 'button', className: 'dcr-tip-hint-action', onClick: props.onSend },
+                    icon('spark', 12),
+                    h('span', null, tt(t, 'tipSendToChat')),
+                  )
+                : null,
+            )
+          : null,
+      )
+    }
+
+    /** 悬浮卡片的最小可用高度：低于这个值就不再让位，改成内部滚动。 */
+    const TIP_MIN_HEIGHT = 220
+    /** 悬浮卡片的最大高度：再高就会盖住整屏，超出部分内部滚动。 */
+    const TIP_MAX_HEIGHT = 680
+
+    /**
+     * 算悬浮卡片的位置。
+     * 关键约束：卡片永远不能超出视口。空间不够就换一侧生长，并把该方向的可用高度
+     * 作为 max-height —— 宁可卡片内部滚动，也不让内容被窗口裁掉。
+     * @param {{left:number,right:number,top:number}} rect 触发行的位置
+     * @param {number} width 卡片宽度
+     * @param {{width:number,height:number}} viewport 视口尺寸
+     * @param {number} margin 离窗口边缘的最小距离
+     */
+    function computeTipPlacement(rect, width, viewport, margin) {
+      // 横向：优先放右边，放不下翻到左边，再放不下就贴边
+      let left = rect.right + margin
+      if (left + width > viewport.width - margin) left = rect.left - width - margin
+      left = Math.max(margin, Math.min(left, viewport.width - width - margin))
+
+      // 纵向：看哪一侧空间更大就往哪一侧生长
+      const below = viewport.height - rect.top - margin
+      const above = rect.top - margin
+      const growDown = below >= TIP_MIN_HEIGHT || below >= above
+
+      // 锚点要先钳进视口，可用高度必须按钳过之后的锚点重算，
+      // 否则触发行贴边时 max-height 会算大，卡片照样被裁掉
+      const anchor = growDown
+        ? Math.max(margin, rect.top)
+        : Math.min(viewport.height - margin, Math.max(margin, rect.top))
+      const room = growDown ? viewport.height - anchor - margin : anchor - margin
+      const maxHeight = Math.min(TIP_MAX_HEIGHT, Math.max(TIP_MIN_HEIGHT, room))
+
+      // 向下生长用 top 锚定；向上生长用 bottom 锚定，卡片底边贴着触发行往上排
+      const style = growDown
+        ? { top: anchor + 'px' }
+        : { bottom: viewport.height - anchor + 'px' }
+
+      return { left: left, maxHeight: maxHeight, growDown: growDown, style: style }
+    }
+
     function HoverTip(props) {
       const t = props.t
       const tip = props.tip
       const snapshot = props.snapshot
       const key = tip.key
       const [sendState, setSendState] = useState('')
+      const [showDetails, setShowDetails] = useState(false)
       const annotation = hunkAnnotation(tip.file, tip.hunk)
       const blame = snapshot.blame[key]
       const analysis = snapshot.analyze[key]
@@ -2410,19 +2591,33 @@ window.__ModuleLoader__.load({
         busy: Boolean(reviewEntry && reviewEntry.busy),
       })
 
-      // 只有真的识别出风险时才给「交给 AI」，没风险时这个按钮没有意义
+      // 只有真的识别出风险时才给「交给 AI」，没风险时这个按钮没有意义。
+      // 模型判成 attention / problem 也算“有东西要确认”，同样给按钮。
       const riskSection = sections.filter((section) => section.key === 'risk')[0]
-      const hasRisk = Boolean(riskSection && riskSection.items.some((item) => item.kind === 'warn'))
+      const reviewVerdict = review && review.verdict ? review.verdict : ''
+      const hasRisk = Boolean(
+        (riskSection && riskSection.items.some((item) => item.kind === 'warn')) ||
+          reviewVerdict === 'attention' ||
+          reviewVerdict === 'problem',
+      )
+      const ruleRisks = review && review.risk ? [] : risksFromRules(tip.hunk)
       const riskPrompt = hasRisk
-        ? buildRiskPrompt(
-            tip.file,
-            tip.hunk,
-            annotation,
-            blame,
-            review,
-            review && review.risk ? [] : risksFromRules(tip.hunk),
-          )
+        ? buildRiskPrompt(tip.file, tip.hunk, annotation, blame, review, ruleRisks)
         : ''
+      // 复核时要把“被判定的那条风险”原样带过去，否则模型不知道在判什么
+      const claimedRisk = review && review.risk ? String(review.risk) : ruleRisks.join('；')
+      const changedWhat =
+        review && (review.before || review.after)
+          ? '之前：' + String(review.before || '—') + '；之后：' + String(review.after || '—')
+          : review && review.what
+            ? String(review.what)
+            : summarizeHunkRules(tip.hunk).join('；')
+      const riskCheck = snapshot.riskChecks ? snapshot.riskChecks[key] : null
+
+      // 细节段落默认收起：一屏先给结论和场景，依据按需展开
+      const mainSections = sections.filter((section) => section.group !== 'detail')
+      const detailSections = sections.filter((section) => section.group === 'detail')
+      const visibleSections = showDetails ? mainSections.concat(detailSections) : mainSections
 
       const sendToChat = useCallback(() => {
         if (!riskPrompt || sendState === 'sending') return
@@ -2433,19 +2628,29 @@ window.__ModuleLoader__.load({
         })
       }, [riskPrompt, sendState, t, props.workspaceItems])
 
-      const width = 380
+      const startRiskCheck = useCallback(() => {
+        if (!hasRisk || (riskCheck && riskCheck.busy)) return
+        requestRiskCheck(tip.file, tip.hunk, claimedRisk, changedWhat)
+      }, [hasRisk, riskCheck, tip.file, tip.hunk, claimedRisk, changedWhat])
+
       const margin = 12
-      const rect = tip.rect
-      let left = rect.right + margin
-      if (left + width > window.innerWidth - margin) left = Math.max(margin, rect.left - width - margin)
-      let top = rect.top
-      if (top + 420 > window.innerHeight - margin) top = Math.max(margin, window.innerHeight - 420 - margin)
+      // 窗口特别窄时收窄卡片，避免横向也溢出
+      const width = Math.max(260, Math.min(380, window.innerWidth - margin * 2))
+      const placement = computeTipPlacement(
+        tip.rect,
+        width,
+        { width: window.innerWidth, height: window.innerHeight },
+        margin,
+      )
 
       return h(
         'div',
         {
           className: 'dcr-tip',
-          style: { left: left + 'px', top: top + 'px', width: width + 'px' },
+          style: Object.assign(
+            { left: placement.left + 'px', width: width + 'px', maxHeight: placement.maxHeight + 'px' },
+            placement.style,
+          ),
           onMouseEnter: props.cancelHide,
           onMouseLeave: props.scheduleHide,
         },
@@ -2458,15 +2663,37 @@ window.__ModuleLoader__.load({
             end: tip.hunk.newStart + Math.max(0, tip.hunk.newCount - 1),
           })),
         ),
-        sections.map((section) =>
+        visibleSections.map((section) =>
           h(
             'div',
-            { key: section.key, className: 'dcr-tip-section' },
-            h('div', { className: 'dcr-tip-label' }, section.label),
+            { key: section.key, className: cx('dcr-tip-section', section.group === 'detail' && 'dcr-tip-section-detail') },
+            section.label ? h('div', { className: 'dcr-tip-label' }, section.label) : null,
             section.items.map((item, index) => {
               if (item.kind === 'muted') return h('div', { key: index, className: 'dcr-tip-muted' }, item.value)
               if (item.kind === 'text') return h('div', { key: index, className: 'dcr-tip-text' }, item.value)
               if (item.kind === 'warn') return h('div', { key: index, className: 'dcr-tip-warn' }, item.value)
+              if (item.kind === 'verdict') {
+                const map = {
+                  ok: ['verdictOk', 'dcr-verdict-ok'],
+                  attention: ['verdictAttention', 'dcr-verdict-attention'],
+                  problem: ['verdictProblem', 'dcr-verdict-problem'],
+                }
+                const entry = map[item.verdict] || map.attention
+                return h(
+                  'div',
+                  { key: index, className: 'dcr-tip-verdict-row' },
+                  h('span', { className: cx('dcr-verdict', entry[1]) }, tt(t, entry[0])),
+                  item.value ? h('span', { className: 'dcr-tip-verdict-summary' }, item.value) : null,
+                )
+              }
+              if (item.kind === 'pair') {
+                return h(
+                  'div',
+                  { key: index, className: cx('dcr-tip-pair', item.mark === '+' ? 'dcr-tip-pair-add' : 'dcr-tip-pair-del') },
+                  h('span', { className: 'dcr-tip-pair-mark' }, item.mark),
+                  h('span', { className: 'dcr-tip-pair-text' }, item.value),
+                )
+              }
               if (item.kind === 'commit') {
                 return h(
                   'div',
@@ -2493,23 +2720,50 @@ window.__ModuleLoader__.load({
             }),
             section.key === 'risk' && hasRisk
               ? h(
-                  'button',
-                  {
-                    type: 'button',
-                    className: 'dcr-tip-action',
-                    disabled: sendState === 'sending',
-                    title: tt(t, 'tipSendHint'),
-                    onClick: sendToChat,
-                  },
-                  icon('spark', 13),
-                  h('span', null, tt(t, sendState === 'sending' ? 'tipSending' : 'tipSendToChat')),
+                  'div',
+                  { className: 'dcr-tip-actions' },
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'dcr-tip-action',
+                      disabled: sendState === 'sending',
+                      title: tt(t, 'tipSendHint'),
+                      onClick: sendToChat,
+                    },
+                    icon('spark', 13),
+                    h('span', null, tt(t, sendState === 'sending' ? 'tipSending' : 'tipSendToChat')),
+                  ),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: cx('dcr-tip-action', riskCheck && riskCheck.busy && 'dcr-tip-action-busy'),
+                      disabled: Boolean(riskCheck && riskCheck.busy),
+                      title: tt(t, 'tipCheckHint'),
+                      onClick: startRiskCheck,
+                    },
+                    icon('review', 13),
+                    h('span', null, tt(t, riskCheck && riskCheck.busy ? 'tipChecking' : 'tipCheckRisk')),
+                  ),
                 )
+              : null,
+            section.key === 'risk' && riskCheck && !riskCheck.busy
+              ? h(RiskVerdict, { t: t, result: riskCheck, onSend: sendToChat })
               : null,
             section.key === 'risk' && sendState && sendState !== 'sending'
               ? h('div', { className: 'dcr-tip-muted' }, sendState)
               : null,
           ),
         ),
+        detailSections.length
+          ? h(
+              'button',
+              { type: 'button', className: 'dcr-tip-more', onClick: () => setShowDetails(!showDetails) },
+              icon('chevron', 12),
+              h('span', null, tt(t, showDetails ? 'tipHideDetails' : 'tipShowDetails')),
+            )
+          : null,
         annotation
           ? null
           : h('div', { className: 'dcr-tip-foot' }, tt(t, 'tipFooter')),
@@ -3351,7 +3605,7 @@ window.__ModuleLoader__.load({
 .dcr-sy-fld{color:var(--dcr-syn-fld)}
 .dcr-sy-cst{color:var(--dcr-syn-cst);font-style:italic}
 
-.dcr-tip{position:fixed;z-index:80;max-height:min(420px,80vh);overflow:auto;padding:12px 13px;border:1px solid var(--dsw-alias-border-l2);border-radius:11px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);box-shadow:0 18px 44px rgba(0,0,0,.3);font-size:12px;line-height:1.55}
+.dcr-tip{position:fixed;z-index:80;max-height:min(680px,84vh);overflow:auto;overscroll-behavior:contain;padding:12px 13px;border:1px solid var(--dsw-alias-border-l2);border-radius:11px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);box-shadow:0 18px 44px rgba(0,0,0,.3);font-size:12px;line-height:1.55}
 .dcr-tip-head{display:flex;align-items:baseline;gap:8px;margin-bottom:8px}
 .dcr-tip-title{font-weight:600;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dcr-tip-range{margin-left:auto;font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
@@ -3360,9 +3614,38 @@ window.__ModuleLoader__.load({
 .dcr-tip-text{color:var(--dsw-alias-label-primary)}
 .dcr-tip-warn{color:var(--dsw-alias-state-warn-primary)}
 .dcr-tip-muted{color:var(--dsw-alias-label-secondary)}
-.dcr-tip-action{display:inline-flex;align-items:center;gap:5px;margin-top:6px;padding:3px 9px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-brand-primary);font-size:11.5px;font-family:inherit;cursor:pointer;transition:background .12s,border-color .12s}
+.dcr-tip-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.dcr-tip-action{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-brand-primary);font-size:11.5px;font-family:inherit;cursor:pointer;transition:background .12s,border-color .12s}
 .dcr-tip-action:hover{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2)}
 .dcr-tip-action:disabled{opacity:.6;cursor:default}
+.dcr-tip-action-busy{position:relative}
+.dcr-tip-verdict{display:flex;flex-direction:column;gap:4px;margin-top:7px;padding:7px 8px;border-radius:7px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base)}
+.dcr-tip-verdict-head{display:flex;align-items:center;gap:6px}
+.dcr-verdict{font-size:11px;font-weight:600;padding:1px 6px;border-radius:4px;border:1px solid currentColor}
+.dcr-verdict-real{color:var(--dsw-alias-state-warn-primary)}
+.dcr-verdict-false_alarm{color:var(--dsw-alias-state-success-primary)}
+.dcr-verdict-unclear{color:var(--dsw-alias-label-secondary)}
+.dcr-tip-verdict-conf{font-size:10.5px;color:var(--dsw-alias-label-secondary)}
+.dcr-tip-verdict-ms{margin-left:auto;font-size:10.5px;color:var(--dsw-alias-label-secondary)}
+.dcr-tip-verdict-hint{display:flex;align-items:center;gap:8px;margin-top:2px;padding-top:6px;border-top:1px dashed var(--dsw-alias-border-l1)}
+.dcr-tip-verdict-hint-text{flex:1 1 auto;min-width:0;font-size:11px;color:var(--dsw-alias-state-warn-primary)}
+.dcr-tip-hint-action{flex:0 0 auto;display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:5px;border:1px solid var(--dsw-alias-brand-primary);background:transparent;color:var(--dsw-alias-brand-primary);font-size:11px;font-family:inherit;cursor:pointer}
+.dcr-tip-hint-action:hover{background:var(--dsw-alias-bg-layer-2)}
+.dcr-tip-verdict-row{display:flex;align-items:flex-start;gap:7px}
+.dcr-tip-verdict-summary{flex:1 1 auto;min-width:0;font-weight:600;font-size:12.5px;line-height:1.5}
+.dcr-verdict-ok{color:var(--dsw-alias-state-success-primary)}
+.dcr-verdict-attention{color:var(--dsw-alias-state-warn-primary)}
+.dcr-verdict-problem{color:var(--dsw-alias-state-error-primary)}
+.dcr-tip-pair{display:flex;gap:6px;align-items:flex-start;line-height:1.5}
+.dcr-tip-pair-mark{flex:0 0 auto;width:10px;font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:600}
+.dcr-tip-pair-text{flex:1 1 auto;min-width:0}
+.dcr-tip-pair-del{color:var(--dsw-alias-label-secondary)}
+.dcr-tip-pair-del .dcr-tip-pair-mark{color:var(--dsw-alias-state-error-primary)}
+.dcr-tip-pair-add .dcr-tip-pair-mark{color:var(--dsw-alias-state-success-primary)}
+.dcr-tip-section-detail{border-top:1px dashed var(--dsw-alias-border-l1);opacity:.92}
+.dcr-tip-more{display:inline-flex;align-items:center;gap:4px;margin-top:8px;padding:2px 0;border:0;background:transparent;color:var(--dsw-alias-label-secondary);font-size:11px;font-family:inherit;cursor:pointer}
+.dcr-tip-more:hover{color:var(--dsw-alias-brand-primary)}
+.dcr-tip-more svg{transform:rotate(-90deg)}
 .dcr-tip-commit{display:flex;gap:7px;align-items:flex-start;margin-top:3px}
 .dcr-tip-commit-body{display:flex;flex-direction:column;gap:1px;min-width:0}
 .dcr-tip-commit-summary{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -3532,6 +3815,17 @@ window.__ModuleLoader__.load({
             tipScope: '本次改动第 {start}–{end} 行（+{added} / -{removed}），是 {total} 处改动里的第 {index} 处，只评价这一段。',
             tipWhat: '这段改了什么',
             tipRisk: '风险',
+            tipChange: '之前 → 之后',
+            tipScenario: '会出问题的场景',
+            tipScenarioPre: '前提',
+            tipScenarioSteps: '步骤',
+            tipScenarioResult: '结果',
+            tipImpact: '影响面',
+            tipShowDetails: '展开依据与历史',
+            tipHideDetails: '收起依据与历史',
+            verdictOk: '没问题',
+            verdictAttention: '需要确认',
+            verdictProblem: '有问题',
             tipNoRisk: '这一段没看出明显风险。',
             tipReviewPending: '正在生成简评，先给规则判断…',
             tipDefs: '相关定义',
@@ -3546,6 +3840,19 @@ window.__ModuleLoader__.load({
             tipSendToChat: '交给 AI 处理',
             tipSending: '正在打开新会话…',
             tipSendHint: '新建一个对话，把这一处的审查结论填进输入框，改完再发',
+            tipCheckRisk: '快速审查',
+            tipChecking: '复核中…',
+            tipCheckHint: '让模型再判一次这条风险是否真的成立，结论直接显示在卡片里',
+            verdictReal: '风险成立',
+            verdictFalseAlarm: '误报',
+            verdictUnclear: '无法确认',
+            confidenceHigh: '高置信',
+            confidenceMedium: '中等置信',
+            confidenceLow: '低置信',
+            verdictEvidence: '依据',
+            verdictAction: '建议',
+            verdictUnclearHint: '片段里看不全，建议交给 AI 处理，让它读完整文件再判一次。',
+            checkFailed: '复核失败：',
             sendNoService: '当前环境没有提供新建会话的能力。',
             sendNoWorkspace: '找不到这个仓库对应的工作区，无法新建会话。',
             sendFailed: '新建会话失败：',
@@ -3668,6 +3975,17 @@ window.__ModuleLoader__.load({
             tipScope: 'Lines {start}–{end} of this change (+{added} / -{removed}) — hunk {index} of {total}. Only this block is judged.',
             tipWhat: 'What changed here',
             tipRisk: 'Risk',
+            tipChange: 'Before → After',
+            tipScenario: 'Scenario that breaks',
+            tipScenarioPre: 'Precondition',
+            tipScenarioSteps: 'Steps',
+            tipScenarioResult: 'Result',
+            tipImpact: 'Impact',
+            tipShowDetails: 'Show evidence and history',
+            tipHideDetails: 'Hide evidence and history',
+            verdictOk: 'Looks fine',
+            verdictAttention: 'Needs a check',
+            verdictProblem: 'Problem',
             tipNoRisk: 'No obvious risk in this block.',
             tipReviewPending: 'Generating a short review; rule-based result shown first…',
             tipDefs: 'Related definitions',
@@ -3682,6 +4000,19 @@ window.__ModuleLoader__.load({
             tipSendToChat: 'Hand to AI',
             tipSending: 'Opening a new chat…',
             tipSendHint: 'Open a new chat with this hunk review filled into the composer, ready to edit or send',
+            tipCheckRisk: 'Verify risk',
+            tipChecking: 'Checking…',
+            tipCheckHint: 'Ask the model whether this risk actually holds; the verdict appears in this card',
+            verdictReal: 'Risk confirmed',
+            verdictFalseAlarm: 'False alarm',
+            verdictUnclear: 'Inconclusive',
+            confidenceHigh: 'high confidence',
+            confidenceMedium: 'medium confidence',
+            confidenceLow: 'low confidence',
+            verdictEvidence: 'Evidence',
+            verdictAction: 'Suggestion',
+            verdictUnclearHint: 'The excerpt does not show the whole picture — hand it to AI so it can read the full file and check again.',
+            checkFailed: 'Check failed: ',
             sendNoService: 'This environment offers no way to start a new chat.',
             sendNoWorkspace: 'No workspace covers this repository, so a new chat cannot be started.',
             sendFailed: 'Could not start a new chat: ',

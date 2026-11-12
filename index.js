@@ -1093,17 +1093,55 @@ async function opHistory(payload) {
 // 单块简评：给悬浮提示用的“这一处改动在干什么”
 // ---------------------------------------------------------------------------
 
-/** 简评的 token 上限：只要一两句话。 */
-const HUNK_MAX_TOKENS = 1_200
+/** 简评的 token 上限：每处要给结论、对照、场景和影响面。 */
+const HUNK_MAX_TOKENS = 3_200
 /** 简评的整体超时。 */
-const HUNK_TIMEOUT_MS = 60_000
+const HUNK_TIMEOUT_MS = 90_000
+/** 送进简评的源码上限。 */
+const HUNK_MAX_CODE = 7_000
 
-/** 简评的系统提示词。 */
-const HUNK_SYSTEM = `你是资深代码审查者。用户会给你一个文件里的若干处代码改动（unified diff 片段）。
-对每一处改动，用简体中文给出：
-1. what：这一处改动具体做了什么（一句话，不超过 60 字，说清“从什么变成什么”）。
-2. risk：这一处的风险（不超过 60 字；没有风险就给空字符串，不要凑）。
-只依据给出的片段，不要推测片段外的代码。只输出 JSON 数组，不要代码围栏。`
+/**
+ * 简评的系统提示词。
+ * 目标是让读者快速建立这次改动的心智模型：会带来什么后果、在什么场景下暴露。
+ * 所以要求的是“判断 + 行为对照 + 具体场景”，不是复述 diff。
+ */
+const HUNK_SYSTEM = `你是资深代码审查者，熟悉 Unity 客户端（C#/HybridCLR）与 Java 服务端（Netty/Protobuf/MongoDB）。
+用户会给你一个文件里的若干处改动、改动附近的真实源码，以及这些改动涉及符号的全仓引用。
+你要帮读者快速建立对这次改动的理解，而不是复述 diff。
+
+对每一处改动输出：
+1. verdict：性质判断，只能是 ok / attention / problem
+   - ok：行为符合意图，没有需要作者再确认的地方
+   - attention：能工作，但有需要作者确认的取舍或边界
+   - problem：会出问题，应当修改
+2. summary：一句话结论，说清“这处改动带来什么后果”，不超过 40 字。
+   禁止写“修改了xxx”“新增了xxx”这类流水账，要写后果。
+3. before：改动前的行为，不超过 50 字，说行为不说代码。
+4. after：改动后的行为，不超过 50 字，说行为不说代码。
+5. scenario：一个具体到能照着复现的场景，verdict 为 ok 时给空对象
+   - precondition：需要什么前置状态
+   - steps：怎么触发
+   - result：会看到什么后果
+   写不出具体场景就给空对象，不要编。
+6. impact：影响范围，说清是崩溃、显示过期、还是影响其它系统，不超过 40 字。
+7. risk：一句话风险摘要，没有就给空字符串，不要凑。
+
+判断必须基于给出的源码和引用。源码不足以下结论时，verdict 用 attention，并在 summary 里写明“需要确认什么”，不要编造调用关系。
+只输出 JSON 数组，不要代码围栏。`
+
+/** 把符号扫描结果压成一段给模型看的引用摘要。 */
+function formatSymbolsBrief(analysis) {
+  const symbols = analysis && Array.isArray(analysis.symbols) ? analysis.symbols : []
+  const lines = []
+  for (const symbol of symbols.slice(0, 5)) {
+    const defs = (symbol.defs || []).filter((item) => !item.target).slice(0, 2)
+    const refs = (symbol.refs || []).filter((item) => !item.target).slice(0, 4)
+    const definition = defs.length ? defs.map((item) => `${item.path}:${item.line}`).join('、') : '未找到定义'
+    const reference = refs.length ? refs.map((item) => `${item.path}:${item.line}`).join('、') : '没有其它引用'
+    lines.push(`- ${symbol.name}：定义 ${definition}；被引用 ${symbol.total || 0} 处（${reference}）`)
+  }
+  return lines.join('\n')
+}
 
 /** 把一处 hunk 转成给模型看的紧凑文本。 */
 function formatHunkForReview(hunk) {
@@ -1115,7 +1153,7 @@ function formatHunkForReview(hunk) {
   return `@@ ${hunk.header || ''}\n${lines.join('\n')}`
 }
 
-/** 一次为多个 hunk 生成简评。 */
+/** 一次为多个 hunk 生成简评：带源码上下文和全仓引用。 */
 async function opHunkReview(payload, ctx) {
   const llm = typeof ctx.get === 'function' ? ctx.get('llm') : undefined
   if (!llm || typeof llm.stream !== 'function') throw new Error('LLM 服务不可用')
@@ -1123,16 +1161,64 @@ async function opHunkReview(payload, ctx) {
   if (!hunks.length) return { reviews: [] }
   const model = resolveReviewModel(ctx, payload)
 
+  // 行区间：有 newStart 才能读源码，没有就只发 diff
+  const ranges = []
+  for (const hunk of hunks) {
+    const start = Math.max(1, Number(hunk.newStart) || 0)
+    if (!start) continue
+    const count = Math.max(1, Number(hunk.newCount) || 1)
+    ranges.push([start, start + count - 1])
+  }
+
+  let excerpt = ''
+  let contextTruncated = false
+  let symbolsBrief = ''
+  let root = ''
+  try {
+    root = typeof payload.cwd === 'string' && payload.cwd.trim() ? await requireRepository(payload.cwd) : ''
+  } catch (error) {
+    root = ''
+  }
+  if (root && typeof payload.path === 'string' && payload.path.trim()) {
+    const relative = toRepoPath(root, payload.path)
+    const context = await collectCodeContext(root, relative, ranges, payload.rev).catch(() => null)
+    if (context && context.excerpt) {
+      const clipped = clipText(context.excerpt, HUNK_MAX_CODE)
+      excerpt = clipped.text
+      contextTruncated = clipped.truncated || Boolean(context.excerptTruncated)
+    }
+    const analysis = await analyzeSymbols(root, relative, ranges, payload.rev).catch(() => null)
+    symbolsBrief = formatSymbolsBrief(analysis)
+  }
+
   const body = hunks
-    .map((hunk, index) => `## 第 ${index + 1} 处（编号 ${index}）\n\`\`\`diff\n${formatHunkForReview(hunk)}\n\`\`\``)
+    .map((hunk, index) => {
+      const start = Math.max(1, Number(hunk.newStart) || 0)
+      const count = Math.max(1, Number(hunk.newCount) || 1)
+      const range = start ? `第 ${start}-${start + count - 1} 行` : '（未给行号）'
+      return `## 第 ${index + 1} 处（编号 ${index}） ${range}\n\`\`\`diff\n${formatHunkForReview(hunk)}\n\`\`\``
+    })
     .join('\n\n')
 
-  const prompt = `文件：${payload.path || '(未知)'}
-
-${body}
-
-请按顺序输出 JSON 数组，每项形如：
-{"i": 编号, "what": "这一处做了什么", "risk": "风险，没有就空字符串"}`
+  const parts = [`文件：${payload.path || '(未知)'}`, '', body, '']
+  if (excerpt) {
+    parts.push('改动附近的源码（行号| 内容）：')
+    parts.push('```')
+    parts.push(excerpt)
+    parts.push('```')
+    if (contextTruncated) parts.push('（源码较长，上面是改动附近的部分）')
+  } else {
+    parts.push('（没有读到源码，只能依据 diff 判断，结论要给得保守）')
+  }
+  if (symbolsBrief) {
+    parts.push('')
+    parts.push('这些改动涉及的符号与全仓引用：')
+    parts.push(symbolsBrief)
+  }
+  parts.push('')
+  parts.push('请按顺序输出 JSON 数组，每项形如：')
+  parts.push('{"i": 编号, "verdict": "ok|attention|problem", "summary": "后果，不超过 40 字", "before": "改动前行为", "after": "改动后行为", "scenario": {"precondition": "", "steps": "", "result": ""}, "impact": "影响范围", "risk": "风险摘要，没有就空字符串"}')
+  const prompt = parts.join('\n')
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), HUNK_TIMEOUT_MS)
@@ -1166,16 +1252,172 @@ ${body}
       parsed = null
     }
   }
+  const str = (value) => (typeof value === 'string' ? value.trim() : '')
   const reviews = Array.isArray(parsed)
     ? parsed
         .filter((item) => item && typeof item.i === 'number')
-        .map((item) => ({
-          index: item.i,
-          what: typeof item.what === 'string' ? item.what : '',
-          risk: typeof item.risk === 'string' ? item.risk : '',
-        }))
+        .map((item) => {
+          const scenario = item.scenario && typeof item.scenario === 'object' ? item.scenario : null
+          const verdict = item.verdict === 'ok' || item.verdict === 'problem' ? item.verdict : item.verdict === 'attention' ? 'attention' : ''
+          const summary = str(item.summary)
+          const before = str(item.before)
+          const after = str(item.after)
+          return {
+            index: item.i,
+            verdict: verdict,
+            summary: summary,
+            before: before,
+            after: after,
+            scenario: scenario
+              ? { precondition: str(scenario.precondition), steps: str(scenario.steps), result: str(scenario.result) }
+              : null,
+            impact: str(item.impact),
+            risk: str(item.risk),
+            // 旧字段：没有新结构时兜底显示，避免两种格式互相打架
+            what: summary || str(item.what),
+          }
+        })
     : []
-  return { reviews, provider: model.provider, model: model.model, raw: reviews.length ? '' : String(text || '').slice(0, 400) }
+  return {
+    reviews,
+    provider: model.provider,
+    model: model.model,
+    hasContext: Boolean(excerpt),
+    contextTruncated: contextTruncated,
+    raw: reviews.length ? '' : String(text || '').slice(0, 400),
+  }
+}
+
+/**
+ * 风险复核的系统提示词。
+ * 和简评的区别：简评只描述“有什么风险”，这里要判定“这条风险是不是真的”。
+ */
+const RISK_SYSTEM = `你是资深代码审查者，熟悉 Unity 客户端（C#/HybridCLR）与 Java 服务端（Netty/Protobuf/MongoDB）。
+用户会给你一处代码改动、改动附近的源码，以及一条已经生成的“疑似风险”。
+你的任务是判断这条风险在这份代码里是否真的成立，而不是重复描述风险。
+
+判断要求：
+- 只依据给出的片段和常识；片段不足以判断时，verdict 给 unclear，不要猜。
+- 指出具体依据：哪一行、哪个调用、哪个状态没有恢复。
+- 没有真实风险时不要为了凑内容硬说成立。
+
+用简体中文，只输出一个 JSON 对象，不要代码围栏。`
+
+/** 风险复核的输出上限。 */
+const RISK_MAX_TOKENS = 1_500
+/** 风险复核的超时。 */
+const RISK_TIMEOUT_MS = 90_000
+/** 送进模型的源码上限。 */
+const RISK_MAX_CODE = 6_000
+
+/** 从模型输出里抠出第一个 JSON 对象，解析失败时用正则兜底。 */
+function parseLooseObject(text) {
+  const raw = String(text || '').trim().replace(/^```(?:json)?\s*/, '').replace(/```$/, '')
+  const start = raw.indexOf('{')
+  const end = raw.lastIndexOf('}')
+  const body = start !== -1 && end > start ? raw.slice(start, end + 1) : raw
+  try {
+    const parsed = JSON.parse(body)
+    if (parsed && typeof parsed === 'object') return parsed
+  } catch (error) {
+    /* 走正则兜底 */
+  }
+  const field = (name) => {
+    // 结尾的引号可有可无：输出被截断时最后一个字段往往没有闭合
+    const match = new RegExp(`"${name}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"?`).exec(body)
+    return match ? match[1].replace(/\\"/g, '"').replace(/\\n/g, ' ').trim() : ''
+  }
+  const verdict = field('verdict')
+  if (!verdict) return null
+  return { verdict, confidence: field('confidence'), reason: field('reason'), evidence: field('evidence'), action: field('action') }
+}
+
+/** 判定这一处改动的风险是否真的成立。 */
+async function opRiskCheck(payload, ctx) {
+  const llm = typeof ctx.get === 'function' ? ctx.get('llm') : undefined
+  if (!llm || typeof llm.stream !== 'function') throw new Error('LLM 服务不可用')
+
+  const root = typeof payload.cwd === 'string' ? payload.cwd.trim() : ''
+  const file = typeof payload.path === 'string' ? payload.path.trim() : ''
+  if (!root) throw new Error('缺少仓库路径')
+  if (!file) throw new Error('缺少文件路径')
+  const hunk = payload.hunk && typeof payload.hunk === 'object' ? payload.hunk : null
+  if (!hunk) throw new Error('缺少改动内容')
+
+  const claimed = typeof payload.risk === 'string' ? payload.risk.trim() : ''
+  const what = typeof payload.what === 'string' ? payload.what.trim() : ''
+  const model = resolveReviewModel(ctx, payload)
+
+  const start = Math.max(1, Number(hunk.newStart) || 1)
+  const count = Math.max(1, Number(hunk.newCount) || 1)
+  const context = await collectCodeContext(root, file, [[start, start + count - 1]], payload.rev).catch(() => null)
+  const excerpt = context && context.excerpt ? clipText(context.excerpt, RISK_MAX_CODE).text : ''
+  const commits = context && Array.isArray(context.recentCommits) ? context.recentCommits.slice(0, 3) : []
+
+  const parts = [`文件：${file}`, `改动位置：第 ${start}-${start + count - 1} 行`, '']
+  parts.push('改动（unified diff 片段）：')
+  parts.push('```diff')
+  parts.push(formatHunkForReview(hunk))
+  parts.push('```')
+  if (excerpt) {
+    parts.push('')
+    parts.push('改动附近的源码：')
+    parts.push('```')
+    parts.push(excerpt)
+    parts.push('```')
+  }
+  if (commits.length) {
+    parts.push('')
+    parts.push('这个文件最近的提交：')
+    for (const line of commits) parts.push('- ' + line)
+  }
+  parts.push('')
+  parts.push('疑似风险：' + (claimed || '(未给出，请自行判断这一段有没有真实风险)'))
+  if (what) parts.push('这段改动做了什么：' + what)
+  parts.push('')
+  parts.push('请输出：')
+  parts.push('{"verdict":"real|false_alarm|unclear","confidence":"high|medium|low","reason":"为什么，指出具体依据，不超过 80 字","evidence":"支撑判断的代码或调用链，没有就空字符串","action":"成立时怎么改，不成立写“无需处理”，不超过 80 字"}')
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), RISK_TIMEOUT_MS)
+  let text = ''
+  const startedAt = Date.now()
+  try {
+    for await (const chunk of llm.stream({
+      provider: model.provider,
+      model: model.model,
+      system: RISK_SYSTEM,
+      messages: [{ role: 'user', content: [{ type: 'text', text: parts.join('\n') }] }],
+      maxTokens: RISK_MAX_TOKENS,
+      signal: controller.signal,
+    })) {
+      if (chunk.type === 'text-delta') text += chunk.text
+      else if (chunk.type === 'finish' && chunk.reason.kind === 'error') {
+        throw new Error(chunk.reason.failure?.message || '模型调用失败')
+      }
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+
+  const parsed = parseLooseObject(text)
+  const verdict = parsed && ['real', 'false_alarm', 'unclear'].includes(parsed.verdict) ? parsed.verdict : 'unclear'
+  const confidence = parsed && ['high', 'medium', 'low'].includes(parsed.confidence) ? parsed.confidence : 'low'
+  const reason = parsed && typeof parsed.reason === 'string' ? parsed.reason.trim() : ''
+  const evidence = parsed && typeof parsed.evidence === 'string' ? parsed.evidence.trim() : ''
+  const action = parsed && typeof parsed.action === 'string' ? parsed.action.trim() : ''
+
+  return {
+    verdict,
+    confidence,
+    reason: reason || (parsed ? '' : '模型没有返回可解析的结论。'),
+    evidence,
+    action,
+    provider: model.provider,
+    model: model.model,
+    ms: Date.now() - startedAt,
+    raw: parsed ? '' : String(text || '').slice(0, 400),
+  }
 }
 
 /** op 路由表。 */
@@ -1190,6 +1432,7 @@ const OPERATIONS = {
   models: opModels,
   history: opHistory,
   hunkReview: opHunkReview,
+  riskCheck: opRiskCheck,
 }
 
 // ---------------------------------------------------------------------------
