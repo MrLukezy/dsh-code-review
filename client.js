@@ -566,6 +566,86 @@ window.__ModuleLoader__.load({
       return { hunks: hunks, blocks: blocks }
     }
 
+    // =====================================================================
+    // 语法着色：按 IDEA / Rider 的观感，用主题语义色派生
+    // =====================================================================
+
+    /** C# 与 Java 的关键字并集：两者重合度很高，合并一套够用。 */
+    const SYNTAX_KEYWORDS = new Set([
+      'abstract', 'as', 'async', 'await', 'base', 'bool', 'break', 'byte', 'case', 'catch', 'char',
+      'checked', 'class', 'const', 'continue', 'decimal', 'default', 'delegate', 'delete', 'do',
+      'double', 'dynamic', 'else', 'enum', 'event', 'explicit', 'export', 'extends', 'extern',
+      'false', 'final', 'finally', 'fixed', 'float', 'for', 'foreach', 'function', 'get', 'global',
+      'goto', 'if', 'implements', 'implicit', 'import', 'in', 'init', 'instanceof', 'int',
+      'interface', 'internal', 'is', 'let', 'lock', 'long', 'namespace', 'native', 'new', 'null',
+      'object', 'operator', 'out', 'override', 'package', 'params', 'partial', 'private',
+      'protected', 'public', 'readonly', 'record', 'ref', 'return', 'sealed', 'set', 'short',
+      'sizeof', 'stackalloc', 'static', 'string', 'struct', 'super', 'switch', 'synchronized',
+      'this', 'throw', 'throws', 'transient', 'true', 'try', 'typeof', 'uint', 'ulong',
+      'unchecked', 'unsafe', 'ushort', 'using', 'var', 'virtual', 'void', 'volatile', 'when',
+      'where', 'while', 'yield',
+    ])
+
+    /**
+     * 一行代码的 token 切分。
+     * 注释/字符串优先，其次注解、预处理指令、数字、标识符。
+     */
+    const SYNTAX_TOKEN_RE = /(\/\/.*$|\/\*[\s\S]*?\*\/|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|@[A-Za-z_]\w*|#[A-Za-z]+|\b\d+(?:\.\d+)?[fFdDlLmMuU]?\b|\b[A-Za-z_]\w*\b)/g
+
+    function classifyToken(token, nextChar) {
+      if (token.startsWith('//') || token.startsWith('/*')) return 'dcr-sy-cmt'
+      if (token[0] === '"' || token[0] === "'") return 'dcr-sy-str'
+      if (token[0] === '@' || token[0] === '#') return 'dcr-sy-ann'
+      if (/^\d/.test(token)) return 'dcr-sy-num'
+      if (SYNTAX_KEYWORDS.has(token)) return 'dcr-sy-kw'
+      // 后面紧跟左括号的是方法调用，和类型名分开着色（关键字已先排除）
+      if (nextChar === '(') return 'dcr-sy-fn'
+      // 首字母大写且不是全大写常量 → 当作类型名
+      if (/^[A-Z]/.test(token) && !/^[A-Z0-9_]+$/.test(token)) return 'dcr-sy-typ'
+      return ''
+    }
+
+    /** 逐行着色结果缓存：悬浮等状态变化会重渲染，避免重复切分。 */
+    const syntaxCache = new Map()
+
+    function highlightLine(text) {
+      const source = String(text === undefined || text === null ? '' : text)
+      const cached = syntaxCache.get(source)
+      if (cached) return cached
+
+      const tokens = []
+      // Javadoc / 块注释的续行：整行都是注释
+      if (/^\s*(\/\*|\*)/.test(source)) {
+        tokens.push({ text: source, cls: 'dcr-sy-cmt' })
+      } else if (!source.trim()) {
+        tokens.push({ text: source, cls: '' })
+      } else {
+        let last = 0
+        SYNTAX_TOKEN_RE.lastIndex = 0
+        let match = SYNTAX_TOKEN_RE.exec(source)
+        while (match) {
+          if (match.index > last) tokens.push({ text: source.slice(last, match.index), cls: '' })
+          tokens.push({ text: match[0], cls: classifyToken(match[0], source[match.index + match[0].length]) })
+          last = match.index + match[0].length
+          match = SYNTAX_TOKEN_RE.exec(source)
+        }
+        if (last < source.length) tokens.push({ text: source.slice(last), cls: '' })
+      }
+
+      if (syntaxCache.size > 6000) syntaxCache.clear()
+      syntaxCache.set(source, tokens)
+      return tokens
+    }
+
+    /** 把一行代码渲染成着色后的 span 列表。 */
+    function renderCode(text) {
+      const tokens = highlightLine(text)
+      if (tokens.length === 1 && !tokens[0].cls) return tokens[0].text
+      return tokens.map((token, index) =>
+        token.cls ? h('span', { key: index, className: token.cls }, token.text) : token.text,
+      )
+    }
+
     /** 单个 hunk 的缓存键。 */
     function hunkKey(file, hunk) {
       return file + '@' + hunk.newStart + ':' + hunk.added.length + ':' + hunk.removed.length + ':' + (hunk.index || 0)
@@ -1655,9 +1735,9 @@ window.__ModuleLoader__.load({
                 onMouseLeave: block ? props.onLeave : undefined,
               },
               h('span', { className: 'dcr-sno dcr-sno-left' }, row.left ? row.left.no : ''),
-              h('span', { className: cx('dcr-scode', 'dcr-sleft', !row.left && 'dcr-sfiller') }, row.left ? row.left.text : ''),
+              h('span', { className: cx('dcr-scode', 'dcr-sleft', !row.left && 'dcr-sfiller') }, row.left ? renderCode(row.left.text) : ''),
               h('span', { className: 'dcr-sno dcr-sno-right' }, row.right ? row.right.no : ''),
-              h('span', { className: cx('dcr-scode', 'dcr-sright', !row.right && 'dcr-sfiller') }, row.right ? row.right.text : ''),
+              h('span', { className: cx('dcr-scode', 'dcr-sright', !row.right && 'dcr-sfiller') }, row.right ? renderCode(row.right.text) : ''),
             )
           }),
         ),
@@ -2632,6 +2712,13 @@ window.__ModuleLoader__.load({
 .dcr-srow-add .dcr-sno-right,.dcr-srow-mod .dcr-sno-right{color:var(--dsw-alias-state-success-primary)}
 .dcr-srow-del .dcr-sno-left,.dcr-srow-mod .dcr-sno-left{color:var(--dsw-alias-state-error-primary)}
 .dcr-srow:hover .dcr-scode{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 10%,transparent)}
+.dcr-sy-kw{color:var(--dsw-alias-brand-primary);font-weight:600}
+.dcr-sy-typ{color:color-mix(in srgb,var(--dsw-alias-brand-primary) 62%,var(--dsw-alias-label-primary))}
+.dcr-sy-str{color:var(--dsw-alias-state-success-primary)}
+.dcr-sy-fn{color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 50%,var(--dsw-alias-brand-primary))}
+.dcr-sy-num{color:var(--dsw-alias-state-warn-primary)}
+.dcr-sy-ann{color:var(--dsw-alias-state-warn-primary);font-style:italic}
+.dcr-sy-cmt{color:var(--dsw-alias-label-secondary);font-style:italic}
 
 .dcr-tip{position:fixed;z-index:80;max-height:min(420px,80vh);overflow:auto;padding:12px 13px;border:1px solid var(--dsw-alias-border-l2);border-radius:11px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);box-shadow:0 18px 44px rgba(0,0,0,.3);font-size:12px;line-height:1.55}
 .dcr-tip-head{display:flex;align-items:baseline;gap:8px;margin-bottom:8px}
