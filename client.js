@@ -167,6 +167,9 @@ window.__ModuleLoader__.load({
       if (name === 'chevron') {
         return h('svg', common, h('path', { d: 'M9 6l6 6-6 6' }))
       }
+      if (name === 'check') {
+        return h('svg', common, h('path', { d: 'M4.5 12.5l4.7 4.7L19.5 6.9' }))
+      }
       if (name === 'spark') {
         return h('svg', common,
           h('path', { d: 'M12 3.5l1.9 4.6 4.6 1.9-4.6 1.9L12 16.5l-1.9-4.6L5.5 10l4.6-1.9z' }),
@@ -208,6 +211,74 @@ window.__ModuleLoader__.load({
       hunkReviews: {},
       autoHunkReview: true,
       history: { path: '', commits: [], busy: false },
+      /** 已审阅的文件：{ 仓库路径: [文件路径, ...] }，只影响左侧列表的显示，不影响能否查看。 */
+      reviewed: loadReviewed(),
+      hideReviewed: loadHideReviewed(),
+    }
+
+    // =====================================================================
+    // 审阅标记的本地持久化
+    // =====================================================================
+
+    const REVIEWED_KEY = 'dsh-code-review:reviewed'
+    const HIDE_REVIEWED_KEY = 'dsh-code-review:hide-reviewed'
+
+    function loadReviewed() {
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(REVIEWED_KEY) || '{}')
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+      } catch (error) {
+        return {}
+      }
+    }
+
+    function loadHideReviewed() {
+      try {
+        return window.localStorage.getItem(HIDE_REVIEWED_KEY) === '1'
+      } catch (error) {
+        return false
+      }
+    }
+
+    function persistReviewed(value) {
+      try {
+        window.localStorage.setItem(REVIEWED_KEY, JSON.stringify(value))
+      } catch (error) {
+        /* 存不了就只在本次会话生效 */
+      }
+    }
+
+    function persistHideReviewed(value) {
+      try {
+        window.localStorage.setItem(HIDE_REVIEWED_KEY, value ? '1' : '0')
+      } catch (error) {
+        /* 同上 */
+      }
+    }
+
+    /** 某个仓库下已审阅的文件路径集合。 */
+    function reviewedSet(repo) {
+      const bucket = state.reviewed[repo || '']
+      return Array.isArray(bucket) ? bucket : []
+    }
+
+    function isReviewed(path) {
+      return reviewedSet(state.cwd).indexOf(path) >= 0
+    }
+
+    /** 切换一个文件的审阅状态；只是标记，不删除任何数据。 */
+    function toggleReviewed(path) {
+      const repo = state.cwd || ''
+      const current = reviewedSet(repo)
+      const next = current.indexOf(path) >= 0 ? current.filter((item) => item !== path) : current.concat([path])
+      const reviewed = Object.assign({}, state.reviewed, { [repo]: next })
+      persistReviewed(reviewed)
+      set({ reviewed: reviewed })
+    }
+
+    function setHideReviewed(value) {
+      persistHideReviewed(value)
+      set({ hideReviewed: value })
     }
 
     const listeners = new Set()
@@ -571,7 +642,7 @@ window.__ModuleLoader__.load({
     // =====================================================================
 
     /** 前端版本号，与 package.json 的 version 保持一致；窗口标题旁会显示，便于确认加载的是哪一版。 */
-    const CLIENT_VERSION = '0.3.0'
+    const CLIENT_VERSION = '0.4.0'
 
     /** 把 CSS 颜色解析成 [r, g, b]。 */
     function parseCssColor(value) {
@@ -1602,6 +1673,12 @@ window.__ModuleLoader__.load({
       const changes = props.changes
       const commits = props.commits
       const selection = snapshot.selection
+      const reviewedPaths = reviewedSet(snapshot.cwd)
+      const pendingCount = changes.filter((entry) => reviewedPaths.indexOf(entry.path) < 0).length
+      // 「只看未审」只过滤左侧列表，不删除任何东西；取消勾选后已审文件原样回来
+      const visibleChanges = snapshot.hideReviewed
+        ? changes.filter((entry) => reviewedPaths.indexOf(entry.path) < 0)
+        : changes
       return h(
         'div',
         { className: 'dcr-col dcr-col-left' },
@@ -1628,6 +1705,20 @@ window.__ModuleLoader__.load({
             tt(t, 'tabCommits'),
             h('span', { className: 'dcr-tab-count' }, commits.length),
           ),
+          h('span', { className: 'dcr-tabs-gap' }),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: cx('dcr-filter', snapshot.hideReviewed && 'dcr-filter-on'),
+              title: tt(t, 'filterHint'),
+              'aria-pressed': Boolean(snapshot.hideReviewed),
+              disabled: changes.length === 0,
+              onClick: () => setHideReviewed(!snapshot.hideReviewed),
+            },
+            icon('check', 12),
+            tt(t, 'unreviewedCount', { count: pendingCount }),
+          ),
         ),
         h(
           'div',
@@ -1635,13 +1726,17 @@ window.__ModuleLoader__.load({
           snapshot.tab === 'changes'
             ? changes.length === 0
               ? h('div', { className: 'dcr-empty' }, tt(t, 'cleanTree'))
-              : changes.map((entry) => h(FileRow, {
-                  key: entry.path,
-                  t: t,
-                  entry: entry,
-                  active: Boolean(selection && selection.kind === 'file' && selection.path === entry.path),
-                  onClick: () => selectFile(entry),
-                }))
+              : visibleChanges.length === 0
+                ? h('div', { className: 'dcr-empty' }, tt(t, 'allReviewed'))
+                : visibleChanges.map((entry) => h(FileRow, {
+                    key: entry.path,
+                    t: t,
+                    entry: entry,
+                    reviewed: reviewedPaths.indexOf(entry.path) >= 0,
+                    active: Boolean(selection && selection.kind === 'file' && selection.path === entry.path),
+                    onClick: () => selectFile(entry),
+                    onToggleReviewed: () => toggleReviewed(entry.path),
+                  }))
             : commits.map((commit) => h(CommitRow, {
                 key: commit.hash,
                 t: t,
@@ -1657,13 +1752,20 @@ window.__ModuleLoader__.load({
       const t = props.t
       const entry = props.entry
       const meta = statusMeta(entry)
+      const reviewed = Boolean(props.reviewed)
       return h(
-        'button',
+        'div',
         {
-          type: 'button',
-          className: cx('dcr-row', props.active && 'dcr-row-on'),
+          className: cx('dcr-row', props.active && 'dcr-row-on', reviewed && 'dcr-row-reviewed'),
           title: entry.path,
+          role: 'button',
+          tabIndex: 0,
           onClick: props.onClick,
+          onKeyDown: (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return
+            event.preventDefault()
+            props.onClick()
+          },
         },
         h('span', { className: cx('dcr-badge', 'dcr-badge-' + meta.tone) }, meta.letter),
         h(
@@ -1681,6 +1783,22 @@ window.__ModuleLoader__.load({
                 entry.added === null || entry.added === undefined ? null : h('span', { key: 'a', className: 'dcr-add' }, '+' + entry.added),
                 entry.removed === null || entry.removed === undefined ? null : h('span', { key: 'r', className: 'dcr-del' }, '-' + entry.removed),
               ],
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            className: cx('dcr-check', reviewed && 'dcr-check-on'),
+            title: reviewed ? tt(t, 'markUnreviewed') : tt(t, 'markReviewed'),
+            'aria-pressed': reviewed,
+            'aria-label': reviewed ? tt(t, 'markUnreviewed') : tt(t, 'markReviewed'),
+            onClick: (event) => {
+              event.stopPropagation()
+              event.preventDefault()
+              props.onToggleReviewed()
+            },
+          },
+          reviewed ? icon('check', 11) : null,
         ),
       )
     }
@@ -2742,12 +2860,25 @@ window.__ModuleLoader__.load({
 
 .dcr-row{display:flex;align-items:center;gap:8px;width:100%;padding:7px 8px;border:1px solid transparent;border-radius:7px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
 .dcr-row:hover{background:var(--dsw-alias-bg-layer-1)}
+.dcr-row:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
 .dcr-row-on{background:var(--dsw-alias-bg-layer-1);border-color:var(--dsw-alias-border-l2)}
 .dcr-row-main{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}
 .dcr-row-name{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dcr-row-name-clip{max-width:100%}
 .dcr-row-path{font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dcr-row-stat{display:flex;gap:6px;font-size:11px;flex:0 0 auto}
+/* 审阅标记：平时半透明的小圆圈，勾上后常亮 */
+.dcr-check{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;padding:0;border:1.5px solid var(--dsw-alias-border-l2);border-radius:50%;background:transparent;color:transparent;cursor:pointer;opacity:.32;transition:opacity .12s,border-color .12s,background .12s}
+.dcr-row:hover .dcr-check{opacity:1}
+.dcr-check:hover{border-color:var(--dsw-alias-state-success-primary)}
+.dcr-check-on{opacity:1;border-color:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-primary);color:var(--dsw-alias-bg-base)}
+.dcr-row-reviewed .dcr-row-name,.dcr-row-reviewed .dcr-row-path,.dcr-row-reviewed .dcr-badge,.dcr-row-reviewed .dcr-row-stat{opacity:.45}
+.dcr-row-reviewed .dcr-row-name{text-decoration:line-through;text-decoration-color:var(--dsw-alias-label-secondary)}
+.dcr-tabs-gap{flex:1 1 auto}
+.dcr-filter{display:inline-flex;align-items:center;gap:4px;height:22px;margin:0 0 6px;padding:0 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;cursor:pointer;white-space:nowrap}
+.dcr-filter:hover:not(:disabled){color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l2)}
+.dcr-filter-on{color:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,transparent)}
+.dcr-filter:disabled{opacity:.45;cursor:default}
 .dcr-add{color:var(--dsw-alias-state-success-primary)}
 .dcr-del{color:var(--dsw-alias-state-error-primary)}
 .dcr-badge{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:5px;font-size:10.5px;font-weight:600;border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-base)}
@@ -2952,6 +3083,11 @@ window.__ModuleLoader__.load({
             status_warn: '注意',
             status_fail: '不符',
             cleanTree: '工作区干净，没有未提交的改动。',
+            unreviewedCount: '未审 {count}',
+            filterHint: '只看未审：隐藏已标记审阅的文件，随时可以取消，文件不会真的被删掉',
+            allReviewed: '这些改动都标记为已审阅了，取消「未审 0」就能重新看到。',
+            markReviewed: '标记为已审阅',
+            markUnreviewed: '取消审阅标记',
             pickFile: '在左侧选择一个文件或提交。',
             loading: '加载中…',
             noDiff: '这个文件没有可显示的文本差异（可能是二进制或纯权限变更）。',
@@ -3074,6 +3210,11 @@ window.__ModuleLoader__.load({
             status_warn: 'warn',
             status_fail: 'fail',
             cleanTree: 'Working tree is clean.',
+            unreviewedCount: '{count} unreviewed',
+            filterHint: 'Only unreviewed: hide files you marked as reviewed. Toggle it off to see them again; nothing is deleted.',
+            allReviewed: 'Every change here is marked reviewed. Turn off the "0 unreviewed" chip to see them again.',
+            markReviewed: 'Mark as reviewed',
+            markUnreviewed: 'Clear reviewed mark',
             pickFile: 'Pick a file or commit on the left.',
             loading: 'Loading…',
             noDiff: 'No textual diff for this file (binary or mode-only change).',
