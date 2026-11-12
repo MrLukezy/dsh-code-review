@@ -45,12 +45,12 @@
       },
       "versions": [
         {
-          "version": "0.7.0",
+          "version": "0.7.1",
           "publishTimestamp": 1794492000,
           "source": {
             "type": "git",
             "url": "https://github.com/MrLukezy/dsh-code-review",
-            "commit": "33ce4b6ecf4e6fa63a2ccdb3040c8f982da6dcbe"
+            "commit": "527eb30ad3ce122c7a2a1dd1160786b71d39b233"
           },
           "engines": {}
         }
