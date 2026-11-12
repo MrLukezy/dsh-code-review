@@ -570,6 +570,9 @@ window.__ModuleLoader__.load({
     // 语法着色：按 IDEA / Rider 的观感，用主题语义色派生
     // =====================================================================
 
+    /** 前端版本号，与 package.json 的 version 保持一致；窗口标题旁会显示，便于确认加载的是哪一版。 */
+    const CLIENT_VERSION = '0.2.0'
+
     /** C# 与 Java 的关键字并集：两者重合度很高，合并一套够用。 */
     const SYNTAX_KEYWORDS = new Set([
       'abstract', 'as', 'async', 'await', 'base', 'bool', 'break', 'byte', 'case', 'catch', 'char',
@@ -1460,7 +1463,11 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { className: 'dcr-header' },
-        h('div', { className: 'dcr-header-title' }, icon('review', 18), h('span', null, tt(t, 'title'))),
+        h('div', { className: 'dcr-header-title' },
+          icon('review', 18),
+          h('span', null, tt(t, 'title')),
+          h('span', { className: 'dcr-version', title: 'dsh-code-review' }, 'v' + CLIENT_VERSION),
+        ),
         h(
           'div',
           { className: 'dcr-header-controls' },
@@ -2559,6 +2566,7 @@ window.__ModuleLoader__.load({
 .dcr-window{position:relative;display:flex;flex-direction:column;width:min(1480px,96vw);height:min(940px,90vh);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l1);border-radius:14px;box-shadow:0 28px 72px rgba(0,0,0,.34);overflow:hidden;outline:none;font-size:13px}
 .dcr-header{display:flex;align-items:center;gap:12px;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);flex:0 0 auto}
 .dcr-header-title{display:flex;align-items:center;gap:8px;font-weight:600;font-size:14px;white-space:nowrap}
+.dcr-version{font-size:10px;font-weight:400;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l1);border-radius:999px;padding:0 6px;line-height:16px;white-space:nowrap}
 .dcr-header-controls{display:flex;align-items:center;gap:10px;min-width:0}
 .dcr-select{height:28px;max-width:220px;padding:0 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:7px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px}
 .dcr-chip{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 9px;border-radius:999px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);font-size:12px;color:var(--dsw-alias-label-secondary);white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis}
@@ -2713,9 +2721,9 @@ window.__ModuleLoader__.load({
 .dcr-srow-del .dcr-sno-left,.dcr-srow-mod .dcr-sno-left{color:var(--dsw-alias-state-error-primary)}
 .dcr-srow:hover .dcr-scode{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 10%,transparent)}
 .dcr-sy-kw{color:var(--dsw-alias-brand-primary);font-weight:600}
-.dcr-sy-typ{color:color-mix(in srgb,var(--dsw-alias-brand-primary) 62%,var(--dsw-alias-label-primary))}
+.dcr-sy-typ{color:color-mix(in srgb,var(--dsw-alias-brand-primary) 85%,var(--dsw-alias-label-primary))}
 .dcr-sy-str{color:var(--dsw-alias-state-success-primary)}
-.dcr-sy-fn{color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 50%,var(--dsw-alias-brand-primary))}
+.dcr-sy-fn{color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 55%,var(--dsw-alias-brand-primary))}
 .dcr-sy-num{color:var(--dsw-alias-state-warn-primary)}
 .dcr-sy-ann{color:var(--dsw-alias-state-warn-primary);font-style:italic}
 .dcr-sy-cmt{color:var(--dsw-alias-label-secondary);font-style:italic}
