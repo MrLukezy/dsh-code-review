@@ -183,6 +183,45 @@ window.__ModuleLoader__.load({
     // 状态仓库（两个 slot 共享同一份模块级状态）
     // =====================================================================
 
+    const LAYOUT_KEY = 'dsh-code-review:layout'
+    const LAYOUT_DEFAULT = { leftWidth: 280, rightWidth: 0, splitRatio: 0.5 }
+
+    function clampNumber(value, min, max, fallback) {
+      const number = Number(value)
+      if (!Number.isFinite(number)) return fallback
+      return Math.min(max, Math.max(min, number))
+    }
+
+    function loadLayout() {
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(LAYOUT_KEY) || '{}')
+        return {
+          leftWidth: clampNumber(parsed.leftWidth, 200, 640, LAYOUT_DEFAULT.leftWidth),
+          rightWidth: clampNumber(parsed.rightWidth, 0, 1000, LAYOUT_DEFAULT.rightWidth),
+          splitRatio: clampNumber(parsed.splitRatio, 0.15, 0.85, LAYOUT_DEFAULT.splitRatio),
+        }
+      } catch (error) {
+        return Object.assign({}, LAYOUT_DEFAULT)
+      }
+    }
+
+    function persistLayout(patch) {
+      try {
+        const next = Object.assign({}, loadLayout(), patch)
+        window.localStorage.setItem(LAYOUT_KEY, JSON.stringify(next))
+      } catch (error) {
+        /* 存不了就只在本次会话生效 */
+      }
+    }
+
+    /** 更新布局：立刻生效，并写入 localStorage。 */
+    function setLayout(patch) {
+      persistLayout(patch)
+      set(patch)
+    }
+
+    const initialLayout = loadLayout()
+
     const state = {
       open: false,
       root: '',
@@ -214,6 +253,10 @@ window.__ModuleLoader__.load({
       /** 已审阅的文件：{ 仓库路径: [文件路径, ...] }，只影响左侧列表的显示，不影响能否查看。 */
       reviewed: loadReviewed(),
       hideReviewed: loadHideReviewed(),
+      /** 布局：左右两栏宽度（rightWidth 为 0 时按页签自动）与差异视图左右分栏比例。 */
+      leftWidth: initialLayout.leftWidth,
+      rightWidth: initialLayout.rightWidth,
+      splitRatio: initialLayout.splitRatio,
     }
 
     // =====================================================================
@@ -642,7 +685,7 @@ window.__ModuleLoader__.load({
     // =====================================================================
 
     /** 前端版本号，与 package.json 的 version 保持一致；窗口标题旁会显示，便于确认加载的是哪一版。 */
-    const CLIENT_VERSION = '0.4.0'
+    const CLIENT_VERSION = '0.5.0'
 
     /** 把 CSS 颜色解析成 [r, g, b]。 */
     function parseCssColor(value) {
@@ -1401,6 +1444,87 @@ window.__ModuleLoader__.load({
     }
 
     // =====================================================================
+    // 组件：拖拽分隔
+    // =====================================================================
+
+    /** 水平拖拽：按住后按每次位移回调，松开或失焦结束。 */
+    function useHorizontalDrag(onDelta) {
+      const [dragging, setDragging] = useState(false)
+      const last = useRef(0)
+      const handler = useRef(onDelta)
+      handler.current = onDelta
+
+      useEffect(() => {
+        if (!dragging) return undefined
+        const onMove = (event) => {
+          const delta = event.clientX - last.current
+          last.current = event.clientX
+          if (delta) handler.current(delta)
+        }
+        const stop = () => setDragging(false)
+        window.addEventListener('mousemove', onMove)
+        window.addEventListener('mouseup', stop)
+        window.addEventListener('blur', stop)
+        const previousCursor = document.body.style.cursor
+        const previousSelect = document.body.style.userSelect
+        document.body.style.cursor = 'col-resize'
+        document.body.style.userSelect = 'none'
+        return () => {
+          window.removeEventListener('mousemove', onMove)
+          window.removeEventListener('mouseup', stop)
+          window.removeEventListener('blur', stop)
+          document.body.style.cursor = previousCursor
+          document.body.style.userSelect = previousSelect
+        }
+      }, [dragging])
+
+      return {
+        dragging: dragging,
+        start: (event) => {
+          if (event.button !== 0) return
+          event.preventDefault()
+          last.current = event.clientX
+          setDragging(true)
+        },
+      }
+    }
+
+    /** 两栏之间的竖直分隔条。 */
+    function Splitter(props) {
+      const drag = useHorizontalDrag(props.onDelta)
+      return h('div', {
+        className: cx('dcr-splitter', drag.dragging && 'dcr-splitter-on'),
+        role: 'separator',
+        'aria-orientation': 'vertical',
+        title: props.title,
+        onMouseDown: drag.start,
+        onDoubleClick: props.onReset,
+      })
+    }
+
+    /** 差异视图中间的分栏手柄：拖动改变「基础版本 / 本地修改」的宽度比。 */
+    function SplitGrip(props) {
+      const ref = useRef(null)
+      const widthRef = useRef(1)
+      const drag = useHorizontalDrag((delta) => {
+        props.onRatio(clampNumber(props.ratio + delta / (widthRef.current || 1), 0.15, 0.85, 0.5))
+      })
+      return h('div', {
+        ref: ref,
+        className: cx('dcr-grip', drag.dragging && 'dcr-grip-on'),
+        role: 'separator',
+        'aria-orientation': 'vertical',
+        title: props.title,
+        onMouseDown: (event) => {
+          const parent = ref.current && ref.current.parentElement
+          widthRef.current = parent ? parent.clientWidth : 1
+          drag.start(event)
+        },
+        onDoubleClick: props.onReset,
+      })
+    }
+
+    // =====================================================================
     // 组件：入口按钮
     // =====================================================================
 
@@ -1472,6 +1596,12 @@ window.__ModuleLoader__.load({
         }
         return this.props.children
       }
+    }
+
+    /** 右栏实际宽度：用户拖过就用拖动值，没拖过则按页签自动（关系图更宽）。 */
+    function effectiveRightWidth(snapshot) {
+      if (snapshot.rightWidth) return snapshot.rightWidth
+      return snapshot.sideTab === 'graph' ? 620 : 380
     }
 
     function ReviewWindow(props) {
@@ -1589,9 +1719,26 @@ window.__ModuleLoader__.load({
             : null,
           h(
             'div',
-            { className: 'dcr-body' },
+            {
+              className: 'dcr-body',
+              style: {
+                '--dcr-left-w': snapshot.leftWidth + 'px',
+                '--dcr-right-w': effectiveRightWidth(snapshot) + 'px',
+                '--dcr-split-ratio': String(snapshot.splitRatio),
+              },
+            },
             h(LeftColumn, { t: t, snapshot: snapshot, changes: changes, commits: commits }),
+            h(Splitter, {
+              title: tt(t, 'resizeLeft'),
+              onDelta: (delta) => setLayout({ leftWidth: clampNumber(snapshot.leftWidth + delta, 200, 640, LAYOUT_DEFAULT.leftWidth) }),
+              onReset: () => setLayout({ leftWidth: LAYOUT_DEFAULT.leftWidth }),
+            }),
             h(CenterColumn, { t: t, snapshot: snapshot, scheduleShow: scheduleShow, scheduleHide: scheduleHide, cancelHide: cancelHide, tip: tip }),
+            h(Splitter, {
+              title: tt(t, 'resizeRight'),
+              onDelta: (delta) => setLayout({ rightWidth: clampNumber(effectiveRightWidth(snapshot) - delta, 240, 1000, 380) }),
+              onReset: () => setLayout({ rightWidth: LAYOUT_DEFAULT.rightWidth }),
+            }),
             h(RightColumn, { t: t, snapshot: snapshot }),
           ),
           snapshot.busy ? h('div', { className: 'dcr-progress' }) : null,
@@ -1885,14 +2032,24 @@ window.__ModuleLoader__.load({
               )
             : null,
           view.hunks.length
-            ? view.hunks.map((entry, index) =>
-                h(SplitHunk, {
-                  key: 'hunk-' + index,
-                  t: t,
-                  entry: entry,
-                  blocks: view.blocks,
-                  onEnter: props.scheduleShow,
-                  onLeave: props.scheduleHide,
+            ? h(
+                'div',
+                { className: 'dcr-diffbody' },
+                view.hunks.map((entry, index) =>
+                  h(SplitHunk, {
+                    key: 'hunk-' + index,
+                    t: t,
+                    entry: entry,
+                    blocks: view.blocks,
+                    onEnter: props.scheduleShow,
+                    onLeave: props.scheduleHide,
+                  }),
+                ),
+                h(SplitGrip, {
+                  ratio: snapshot.splitRatio,
+                  title: tt(t, 'resizeSplit'),
+                  onRatio: (ratio) => setLayout({ splitRatio: ratio }),
+                  onReset: () => setLayout({ splitRatio: LAYOUT_DEFAULT.splitRatio }),
                 }),
               )
             : null,
@@ -2128,7 +2285,7 @@ window.__ModuleLoader__.load({
 
       return h(
         'div',
-        { className: cx('dcr-col', 'dcr-col-right', snapshot.sideTab === 'graph' && 'dcr-col-wide') },
+        { className: 'dcr-col dcr-col-right' },
         h(
           'div',
           { className: 'dcr-tabs' },
@@ -2753,8 +2910,8 @@ window.__ModuleLoader__.load({
 .dcr-launcher-on{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-border-l1)}
 .dcr-launcher-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-.dcr-backdrop{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.44);pointer-events:auto;padding:24px}
-.dcr-window{position:relative;display:flex;flex-direction:column;width:min(1480px,96vw);height:min(940px,90vh);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l1);border-radius:14px;box-shadow:0 28px 72px rgba(0,0,0,.34);overflow:hidden;outline:none;font-size:13px}
+.dcr-backdrop{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.44);pointer-events:auto;padding:10px}
+.dcr-window{position:relative;display:flex;flex-direction:column;width:min(1820px,98vw);height:min(1120px,96vh);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l1);border-radius:14px;box-shadow:0 28px 72px rgba(0,0,0,.34);overflow:hidden;outline:none;font-size:13px}
 .dcr-header{display:flex;align-items:center;gap:12px;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);flex:0 0 auto}
 .dcr-header-title{display:flex;align-items:center;gap:8px;font-weight:600;font-size:14px;white-space:nowrap}
 .dcr-version{font-size:10px;font-weight:400;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l1);border-radius:999px;padding:0 6px;line-height:16px;white-space:nowrap}
@@ -2770,10 +2927,10 @@ window.__ModuleLoader__.load({
 
 .dcr-body{display:flex;min-height:0;flex:1 1 auto}
 .dcr-col{display:flex;flex-direction:column;min-height:0;min-width:0}
-.dcr-col-left{flex:0 0 300px;border-right:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2)}
+.dcr-col-left{flex:0 0 var(--dcr-left-w,280px);background:var(--dsw-alias-bg-layer-2)}
 .dcr-col-center{flex:1 1 auto;background:var(--dsw-alias-bg-base)}
-.dcr-col-right{flex:0 0 360px;border-left:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2)}
-.dcr-col-wide{flex:0 0 620px}
+.dcr-col-right{flex:0 0 var(--dcr-right-w,380px);background:var(--dsw-alias-bg-layer-2)}
+
 .dcr-ai{display:flex;flex-direction:column;gap:10px}
 .dcr-ai-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .dcr-seg{display:inline-flex;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;overflow:hidden}
@@ -2908,11 +3065,20 @@ window.__ModuleLoader__.load({
 .dcr-line-del{background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 14%, transparent)}
 .dcr-line-add .dcr-sign{color:var(--dsw-alias-state-success-primary)}
 .dcr-line-del .dcr-sign{color:var(--dsw-alias-state-error-primary)}
-.dcr-splithead{display:grid;grid-template-columns:1fr 1fr;margin:8px 10px 0;border:1px solid var(--dsw-alias-border-l1);border-radius:9px 9px 0 0;background:var(--dsw-alias-bg-layer-2);font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden}
+.dcr-splithead{display:grid;grid-template-columns:calc(48px + (100% + 20px - 96px)*var(--dcr-split-ratio,.5)) 1fr;margin:8px 10px 0;border:1px solid var(--dsw-alias-border-l1);border-radius:9px 9px 0 0;background:var(--dsw-alias-bg-layer-2);font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden}
 .dcr-splithead-cell{padding:5px 10px;text-align:center;border-right:1px solid var(--dsw-alias-border-l1)}
 .dcr-splithead-cell:last-child{border-right:none}
 .dcr-split{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:1.62}
-.dcr-srow{display:grid;grid-template-columns:48px minmax(0,1fr) 48px minmax(0,1fr);align-items:stretch}
+.dcr-srow{display:grid;grid-template-columns:48px minmax(0,calc((100% - 96px)*var(--dcr-split-ratio,.5))) 48px minmax(0,1fr);align-items:stretch}
+/* 可拖拽分隔：两栏之间的竖条 */
+.dcr-splitter{flex:0 0 5px;position:relative;cursor:col-resize;z-index:3;background:transparent}
+.dcr-splitter::after{content:'';position:absolute;top:0;bottom:0;left:2px;width:1px;background:var(--dsw-alias-border-l1);transition:background .12s,width .12s,left .12s}
+.dcr-splitter:hover::after,.dcr-splitter-on::after{left:1px;width:3px;background:var(--dsw-alias-brand-primary)}
+/* 差异视图中间的左右分栏手柄 */
+.dcr-diffbody{position:relative}
+.dcr-grip{position:absolute;top:0;bottom:0;left:calc(48px + (100% - 96px)*var(--dcr-split-ratio,.5));width:11px;margin-left:-5px;cursor:col-resize;z-index:6}
+.dcr-grip::after{content:'';position:absolute;top:0;bottom:0;left:5px;width:1px;background:var(--dsw-alias-border-l1);transition:background .12s,width .12s,left .12s}
+.dcr-grip:hover::after,.dcr-grip-on::after{left:4px;width:3px;background:var(--dsw-alias-brand-primary)}
 .dcr-sno{padding-right:8px;text-align:right;color:var(--dsw-alias-state-idle-primary);user-select:none;white-space:nowrap}
 .dcr-scode{padding:0 10px;white-space:pre;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .dcr-sright{border-left:1px solid var(--dsw-alias-border-l1)}
@@ -3088,6 +3254,9 @@ window.__ModuleLoader__.load({
             allReviewed: '这些改动都标记为已审阅了，取消「未审 0」就能重新看到。',
             markReviewed: '标记为已审阅',
             markUnreviewed: '取消审阅标记',
+            resizeLeft: '拖动调整左栏宽度，双击恢复默认',
+            resizeRight: '拖动调整右栏宽度，双击恢复默认',
+            resizeSplit: '拖动调整左右两版的宽度比例，双击恢复对半',
             pickFile: '在左侧选择一个文件或提交。',
             loading: '加载中…',
             noDiff: '这个文件没有可显示的文本差异（可能是二进制或纯权限变更）。',
@@ -3215,6 +3384,9 @@ window.__ModuleLoader__.load({
             allReviewed: 'Every change here is marked reviewed. Turn off the "0 unreviewed" chip to see them again.',
             markReviewed: 'Mark as reviewed',
             markUnreviewed: 'Clear reviewed mark',
+            resizeLeft: 'Drag to resize the file list, double-click to reset',
+            resizeRight: 'Drag to resize the side panel, double-click to reset',
+            resizeSplit: 'Drag to change the before/after split, double-click to reset',
             pickFile: 'Pick a file or commit on the left.',
             loading: 'Loading…',
             noDiff: 'No textual diff for this file (binary or mode-only change).',
