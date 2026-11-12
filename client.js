@@ -571,7 +571,63 @@ window.__ModuleLoader__.load({
     // =====================================================================
 
     /** 前端版本号，与 package.json 的 version 保持一致；窗口标题旁会显示，便于确认加载的是哪一版。 */
-    const CLIENT_VERSION = '0.2.0'
+    const CLIENT_VERSION = '0.3.0'
+
+    /** 把 CSS 颜色解析成 [r, g, b]。 */
+    function parseCssColor(value) {
+      const raw = String(value || '').trim()
+      if (!raw) return null
+      const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(raw)
+      if (hex) {
+        const body = hex[1]
+        if (body.length === 3) {
+          return [parseInt(body[0] + body[0], 16), parseInt(body[1] + body[1], 16), parseInt(body[2] + body[2], 16)]
+        }
+        return [parseInt(body.slice(0, 2), 16), parseInt(body.slice(2, 4), 16), parseInt(body.slice(4, 6), 16)]
+      }
+      const rgb = /^rgba?\(([^)]+)\)$/i.exec(raw)
+      if (rgb) {
+        const parts = rgb[1].split(/[\s,/]+/).filter(Boolean).map(Number)
+        if (parts.length >= 3 && parts.slice(0, 3).every((part) => Number.isFinite(part))) return parts.slice(0, 3)
+      }
+      return null
+    }
+
+    /**
+     * 判断当前是明主题还是暗主题。
+     * 宿主没有暴露 mode，只能看 --dsw-alias-bg-base 的实际亮度。
+     */
+    function detectColorMode() {
+      try {
+        for (const node of [document.documentElement, document.body]) {
+          if (!node) continue
+          const style = getComputedStyle(node)
+          const rgb = parseCssColor(style.getPropertyValue('--dsw-alias-bg-base'))
+          if (rgb) {
+            const luminance = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255
+            return luminance < 0.5 ? 'dark' : 'light'
+          }
+          const scheme = String(style.colorScheme || '').trim()
+          if (scheme.includes('dark') && !scheme.includes('light')) return 'dark'
+        }
+      } catch (error) {
+        /* 取不到就按明主题处理 */
+      }
+      return 'light'
+    }
+
+    /** 跟随宿主主题切换：两秒轮询一次，成本可以忽略。 */
+    function useColorMode() {
+      const [mode, setMode] = useState(detectColorMode)
+      useEffect(() => {
+        const timer = window.setInterval(() => {
+          const next = detectColorMode()
+          setMode((current) => (current === next ? current : next))
+        }, 2000)
+        return () => window.clearInterval(timer)
+      }, [])
+      return mode
+    }
 
     /** C# 与 Java 的关键字并集：两者重合度很高，合并一套够用。 */
     const SYNTAX_KEYWORDS = new Set([
@@ -595,7 +651,13 @@ window.__ModuleLoader__.load({
      */
     const SYNTAX_TOKEN_RE = /(\/\/.*$|\/\*[\s\S]*?\*\/|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|@[A-Za-z_]\w*|#[A-Za-z]+|\b\d+(?:\.\d+)?[fFdDlLmMuU]?\b|\b[A-Za-z_]\w*\b)/g
 
-    function classifyToken(token, nextChar) {
+    /**
+     * 字段 / 常量声明：`private long uid;` 里的 `uid` 要单独着色。
+     * 必须以访问修饰符或 static/final/readonly 开头，避免把局部变量也染成字段色。
+     */
+    const FIELD_DECL_RE = /^\s*(?:(?:public|private|protected|internal|static|readonly|final|volatile|transient|const|abstract|sealed|unsafe)\s+)+([A-Za-z_][\w<>[\],.?\s]*?)\s+([A-Za-z_]\w*)\s*(?:=[^=]|;|,|$)/
+
+    function classifyToken(token, nextChar, fieldName) {
       if (token.startsWith('//') || token.startsWith('/*')) return 'dcr-sy-cmt'
       if (token[0] === '"' || token[0] === "'") return 'dcr-sy-str'
       if (token[0] === '@' || token[0] === '#') return 'dcr-sy-ann'
@@ -603,6 +665,10 @@ window.__ModuleLoader__.load({
       if (SYNTAX_KEYWORDS.has(token)) return 'dcr-sy-kw'
       // 后面紧跟左括号的是方法调用，和类型名分开着色（关键字已先排除）
       if (nextChar === '(') return 'dcr-sy-fn'
+      // 全大写标识符当常量
+      if (/^[A-Z][A-Z0-9_]{1,}$/.test(token)) return 'dcr-sy-cst'
+      // 声明行里被声明的那个名字当字段
+      if (fieldName && token === fieldName) return 'dcr-sy-fld'
       // 首字母大写且不是全大写常量 → 当作类型名
       if (/^[A-Z]/.test(token) && !/^[A-Z0-9_]+$/.test(token)) return 'dcr-sy-typ'
       return ''
@@ -617,6 +683,10 @@ window.__ModuleLoader__.load({
       if (cached) return cached
 
       const tokens = []
+      // 这一行如果是字段声明，记下被声明的名字，下面单独着色
+      const fieldMatch = FIELD_DECL_RE.exec(source)
+      const fieldName = fieldMatch ? fieldMatch[2] : ''
+
       // Javadoc / 块注释的续行：整行都是注释
       if (/^\s*(\/\*|\*)/.test(source)) {
         tokens.push({ text: source, cls: 'dcr-sy-cmt' })
@@ -628,7 +698,7 @@ window.__ModuleLoader__.load({
         let match = SYNTAX_TOKEN_RE.exec(source)
         while (match) {
           if (match.index > last) tokens.push({ text: source.slice(last, match.index), cls: '' })
-          tokens.push({ text: match[0], cls: classifyToken(match[0], source[match.index + match[0].length]) })
+          tokens.push({ text: match[0], cls: classifyToken(match[0], source[match.index + match[0].length], fieldName) })
           last = match.index + match[0].length
           match = SYNTAX_TOKEN_RE.exec(source)
         }
@@ -1358,6 +1428,8 @@ window.__ModuleLoader__.load({
         if (dialogRef.current) dialogRef.current.focus()
       }, [])
 
+      const colorMode = useColorMode()
+
       useEffect(
         () => () => {
           window.clearTimeout(hideTimer.current)
@@ -1415,6 +1487,7 @@ window.__ModuleLoader__.load({
             'aria-label': tt(t, 'title'),
             tabIndex: -1,
             ref: dialogRef,
+            'data-dcr-theme': colorMode,
           },
           h(WindowHeader, { t: t, snapshot: snapshot, changes: changes }),
           snapshot.error
@@ -2720,13 +2793,19 @@ window.__ModuleLoader__.load({
 .dcr-srow-add .dcr-sno-right,.dcr-srow-mod .dcr-sno-right{color:var(--dsw-alias-state-success-primary)}
 .dcr-srow-del .dcr-sno-left,.dcr-srow-mod .dcr-sno-left{color:var(--dsw-alias-state-error-primary)}
 .dcr-srow:hover .dcr-scode{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 10%,transparent)}
-.dcr-sy-kw{color:var(--dsw-alias-brand-primary);font-weight:600}
-.dcr-sy-typ{color:color-mix(in srgb,var(--dsw-alias-brand-primary) 85%,var(--dsw-alias-label-primary))}
-.dcr-sy-str{color:var(--dsw-alias-state-success-primary)}
-.dcr-sy-fn{color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 55%,var(--dsw-alias-brand-primary))}
-.dcr-sy-num{color:var(--dsw-alias-state-warn-primary)}
-.dcr-sy-ann{color:var(--dsw-alias-state-warn-primary);font-style:italic}
-.dcr-sy-cmt{color:var(--dsw-alias-label-secondary);font-style:italic}
+/* Rider / IntelliJ Light 调色板；暗主题由 [data-dcr-theme="dark"] 覆盖 */
+.dcr-window{--dcr-syn-kw:#0033B3;--dcr-syn-typ:#1A1A1A;--dcr-syn-fn:#00627A;--dcr-syn-str:#067D17;--dcr-syn-num:#1750EB;--dcr-syn-cmt:#8C8C8C;--dcr-syn-ann:#9E880D;--dcr-syn-fld:#871094;--dcr-syn-cst:#871094}
+/* Rider / Darcula 调色板 */
+.dcr-window[data-dcr-theme="dark"]{--dcr-syn-kw:#CC7832;--dcr-syn-typ:#A9B7C6;--dcr-syn-fn:#FFC66D;--dcr-syn-str:#6A8759;--dcr-syn-num:#6897BB;--dcr-syn-cmt:#808080;--dcr-syn-ann:#BBB529;--dcr-syn-fld:#9876AA;--dcr-syn-cst:#9876AA}
+.dcr-sy-kw{color:var(--dcr-syn-kw);font-weight:600}
+.dcr-sy-typ{color:var(--dcr-syn-typ)}
+.dcr-sy-fn{color:var(--dcr-syn-fn)}
+.dcr-sy-str{color:var(--dcr-syn-str)}
+.dcr-sy-num{color:var(--dcr-syn-num)}
+.dcr-sy-ann{color:var(--dcr-syn-ann)}
+.dcr-sy-cmt{color:var(--dcr-syn-cmt)}
+.dcr-sy-fld{color:var(--dcr-syn-fld)}
+.dcr-sy-cst{color:var(--dcr-syn-cst);font-style:italic}
 
 .dcr-tip{position:fixed;z-index:80;max-height:min(420px,80vh);overflow:auto;padding:12px 13px;border:1px solid var(--dsw-alias-border-l2);border-radius:11px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);box-shadow:0 18px 44px rgba(0,0,0,.3);font-size:12px;line-height:1.55}
 .dcr-tip-head{display:flex;align-items:baseline;gap:8px;margin-bottom:8px}
