@@ -4,13 +4,43 @@
 中间是版本对比 diff，鼠标悬浮任意变更段会弹出这一段的简短审查（范围 / 改了什么 / 风险 / 依据），
 右栏还能生成这次改动的逻辑关系图和整份自然语言审查。
 
+## 安装
+
+需要 DeepSeek Harness（`dsh`）和一个可用的模型配置（AI 审查用）。插件不依赖任何第三方包。
+
+```bash
+git clone https://github.com/MrLukezy/dsh-code-review.git
+```
+
+然后在 Harness 里把**克隆下来的目录**作为 bundle 装上（路径用绝对路径）：
+
+```
+plugin_manager install_bundle  <克隆目录的绝对路径>
+```
+
+装好后侧边栏底部会出现「版本审查」按钮。装完如果没出现，检查：
+
+- `plugin_manager list_plugins` 里是否有 `code-review`，状态是否 enabled；
+- 插件要求宿主提供 `webServer` 服务（Web 版 Harness 默认有）；
+- 浏览器端改动需要刷新页面才生效，宿主端改动需要把插件 disable/enable 一次。
+
+## 依赖
+
+| 依赖 | 用途 | 必需 |
+|---|---|---|
+| `git`（命令行） | 所有 diff / blame / log 数据 | 是 |
+| Harness `llm` 服务 | 悬浮简评、AI 审查 | AI 功能需要 |
+| Harness `agentDefaultModel` 服务 | 默认用哪个模型审查 | AI 功能需要 |
+| Harness `workspaceRegistry` 服务 | 发现你注册过的工作区 | 可选，缺了只少几个候选根 |
+
+`git` 会按顺序尝试 `git`、`GIT_EXE` 环境变量、以及 Windows 上的默认安装路径。
+
 ## 用法
 
 1. 侧边栏底部（设置按钮旁）点「版本审查」，或再次点击关闭。
 2. 顶部下拉框选仓库。插件会把**会话工作目录 + 进程目录 + 你注册过的工作区**都当成候选根，
-   逐个扫「它自己 + 下面一层带 `.git` 的子目录」，去重后按 `.git/index` 的最近活跃时间排序
-   （本工作区会列出 `u3dclient`、`gameserver`、`alliance`、`slgconfiguration` 等 14 个仓库）。
-   选过一次会记在 localStorage，下次打开直接回到那个仓库。
+   逐个扫「它自己 + 下面一层带 `.git` 的子目录」，去重后按 `.git/index` 的最近活跃时间排序，
+   最近跑过 git 的仓库排在前面。选过一次会记在 localStorage，下次打开直接回到那个仓库。
    一个都没扫到时，窗口里会出现手动输入路径的输入框。
 3. 左栏文件按「代码 → 其它 → 二进制」排序，二进制文件带 `二进制` 标记，默认不会先点到它们。
 4. 「改动」页签列出工作区 / 暂存区的改动，点一条看 diff；「提交」页签看最近 40 条提交，
@@ -127,3 +157,7 @@
 - 浏览器半区 `client.js`：注册两个 slot —— `sidebar.footer.action`（入口按钮）和
   `shell.overlay`（窗口本体）。样式只用 `--dsw-alias-*` 主题 token，不引宿主 Client 包，
   窗口外套了一层错误边界。
+
+## License
+
+[MIT](LICENSE)
