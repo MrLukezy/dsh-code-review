@@ -11,13 +11,49 @@
   "metadata": {
     "categories": {
       "review": {
-        "title": { "en": "Code Review", "zh": "代码审查" }
+        "title": {
+          "en": "Code Review",
+          "zh": "代码审查"
+        }
+      },
+      "game": {
+        "title": {
+          "en": "Game",
+          "zh": "游戏"
+        }
       }
     },
     "labels": {
-      "git": { "title": { "en": "Git", "zh": "Git" } },
-      "ai": { "title": { "en": "AI", "zh": "AI" } },
-      "ui": { "title": { "en": "Interface", "zh": "界面" } }
+      "git": {
+        "title": {
+          "en": "Git",
+          "zh": "Git"
+        }
+      },
+      "ai": {
+        "title": {
+          "en": "AI",
+          "zh": "AI"
+        }
+      },
+      "ui": {
+        "title": {
+          "en": "Interface",
+          "zh": "界面"
+        }
+      },
+      "game": {
+        "title": {
+          "en": "Game",
+          "zh": "游戏"
+        }
+      },
+      "stats": {
+        "title": {
+          "en": "Statistics",
+          "zh": "统计"
+        }
+      }
     },
     "sortKeys": {}
   },
@@ -52,7 +88,11 @@
           "改动审查",
           "审查"
         ],
-        "labels": ["git", "ai", "ui"],
+        "labels": [
+          "git",
+          "ai",
+          "ui"
+        ],
         "sortKeys": {}
       },
       "versions": [
@@ -63,6 +103,62 @@
             "type": "git",
             "url": "https://github.com/MrLukezy/dsh-code-review",
             "commit": "abc7c1297a385eb23ca16e587a78185bcbce7866"
+          },
+          "engines": {}
+        }
+      ]
+    },
+    {
+      "name": "dsh-codequest",
+      "title": {
+        "en": "CodeQuest",
+        "zh": "CodeQuest 成就系统"
+      },
+      "description": {
+        "en": "An achievement game fed by your real DSH usage: 313 achievements over 12 categories read token traffic, tool calls, touched files, models and the tone of your prompts. Most stay sealed until you get close, so the wall reveals itself as you play. Ships a draggable session-page HUD with a live token curve and +N floaters, plus an optional self-hosted leaderboard with 11 boards.",
+        "zh": "用你真实的 DSH 使用量驱动的成就小游戏：12 个分类共 313 枚成就，数据取自 token 流量、工具调用、改过的文件、用过的模型和你说过的话。大部分成就解锁前是「未揭晓」状态，接近达成才会露面，成就墙会随着你的使用一点点亮起来。会话页有可拖动的悬浮卡片（实时曲线 + Token 消耗飘字），还可以接自建排行榜，支持 11 个榜单。"
+      },
+      "author": "MrLukezy",
+      "homepage": "https://github.com/MrLukezy/dsh-codequest",
+      "repository": {
+        "url": "https://github.com/MrLukezy/dsh-codequest"
+      },
+      "metadata": {
+        "category": "game",
+        "keywords": [
+          "achievement",
+          "成就",
+          "成就系统",
+          "game",
+          "小游戏",
+          "gamification",
+          "leaderboard",
+          "排行榜",
+          "token",
+          "token 统计",
+          "stats",
+          "usage",
+          "hud",
+          "悬浮窗",
+          "deepseek harness",
+          "dsh",
+          "dsh-plugin"
+        ],
+        "labels": [
+          "game",
+          "stats",
+          "ui"
+        ],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "0.7.0",
+          "publishTimestamp": 1794472135,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/MrLukezy/dsh-codequest",
+            "commit": "873740f94d2aad6831730924ca57f8f5d202e323"
           },
           "engines": {}
         }
