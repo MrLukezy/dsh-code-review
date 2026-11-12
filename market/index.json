@@ -39,7 +39,19 @@
       },
       "metadata": {
         "category": "review",
-        "keywords": ["code review", "diff", "git", "version comparison", "代码审查", "差异对比", "版本对比"],
+        "keywords": [
+          "code review",
+          "diff",
+          "git",
+          "version comparison",
+          "代码审查",
+          "代码修改",
+          "版本审查",
+          "版本对比",
+          "差异对比",
+          "改动审查",
+          "审查"
+        ],
         "labels": ["git", "ai", "ui"],
         "sortKeys": {}
       },
