@@ -249,8 +249,8 @@
         "zh": "HFSY 生图工作台"
       },
       "description": {
-        "en": "A full-page studio for OpenAI-compatible image/video relays: per-model prices, favorites with folders, reference images and a character library (image-to-image), a 4K upscale tool, per-second video tasks, per-day local output and persistent history.",
-        "zh": "在 DSH 里开一个全屏工作台调用 OpenAI 兼容的中转：模型带标价、收藏与收藏夹、参考图与角色库（图生图保持一致形象）、4K 增强工具、按秒计费的视频任务；出图出片按日期落到本地目录，历史与收藏都持久保存。"
+        "en": "A full-page studio for OpenAI-compatible image/video relays with its own sidebar: create (text / references / video modes), a filterable gallery, favorites with folders, a character library and a 4K upscale tool. Per-model pricing, per-day local output, persistent history.",
+        "zh": "在 DSH 里开一个带侧边导航的全屏工作台调用 OpenAI 兼容中转：创作页分文生图/参考图/视频三档，另有画廊筛选、收藏夹、角色库与 4K 增强工具；模型带标价，成品按日期落盘，历史与收藏持久保存。"
       },
       "author": "MrLukezy",
       "homepage": "https://github.com/MrLukezy/dsh-hfsy-studio",
@@ -279,7 +279,10 @@
           "角色参考",
           "upscale",
           "4K",
-          "图生图"
+          "图生图",
+          "studio",
+          "tabs",
+          "工作台"
         ],
         "labels": [
           "image",
@@ -290,6 +293,16 @@
         "sortKeys": {}
       },
       "versions": [
+        {
+          "version": "0.4.0",
+          "publishTimestamp": 1794557138,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/MrLukezy/dsh-hfsy-studio",
+            "commit": "627f95d4ce529f54fcdc73975289f4e1c80afe24"
+          },
+          "engines": {}
+        },
         {
           "version": "0.3.0",
           "publishTimestamp": 1794554118,
