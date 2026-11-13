@@ -249,8 +249,8 @@
         "zh": "HFSY 生图工作台"
       },
       "description": {
-        "en": "A full-page studio inside DSH for OpenAI-compatible image/video relays: prompt panel, result gallery with lightbox and downloads, per-day local output folder and persistent history. Failures stay visible with the relay's original error.",
-        "zh": "在 DSH 里开一个全屏工作台调用 OpenAI 兼容的中转出图/出片：左侧参数（模型、尺寸、质量、数量、画风预设），右侧结果画廊（灯箱、下载、复制落盘路径）与历史记录；失败任务保留中转原始报错，出图按日期落到本地目录。"
+        "en": "A full-page studio inside DSH for OpenAI-compatible image/video relays: prompt panel with per-model prices, result gallery with lightbox and downloads, per-day local output folder and persistent history. Video goes through the relay's async task API and bills per second.",
+        "zh": "在 DSH 里开一个全屏工作台调用 OpenAI 兼容的中转出图/出片：左侧参数（模型下拉带单价、尺寸、质量、数量、画风预设），右侧结果画廊（灯箱、下载、复制落盘路径）与历史记录；视频按秒计费、走异步任务接口，出图出片都按日期落到本地目录。"
       },
       "author": "MrLukezy",
       "homepage": "https://github.com/MrLukezy/dsh-hfsy-studio",
@@ -283,6 +283,16 @@
         "sortKeys": {}
       },
       "versions": [
+        {
+          "version": "0.2.0",
+          "publishTimestamp": 1794552826,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/MrLukezy/dsh-hfsy-studio",
+            "commit": "8cbc29d71c7adc006d314db6474f6d916585839f"
+          },
+          "engines": {}
+        },
         {
           "version": "0.1.0",
           "publishTimestamp": 1794542844,
