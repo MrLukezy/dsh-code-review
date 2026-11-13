@@ -21,6 +21,12 @@
           "en": "Game",
           "zh": "游戏"
         }
+      },
+      "media": {
+        "title": {
+          "en": "Media",
+          "zh": "图像与媒体"
+        }
       }
     },
     "labels": {
@@ -52,6 +58,18 @@
         "title": {
           "en": "Statistics",
           "zh": "统计"
+        }
+      },
+      "media": {
+        "title": {
+          "en": "Media",
+          "zh": "媒体"
+        }
+      },
+      "image": {
+        "title": {
+          "en": "Image",
+          "zh": "生图"
         }
       }
     },
@@ -219,6 +237,59 @@
             "type": "git",
             "url": "https://github.com/MrLukezy/dsh-codequest",
             "commit": "b68e7a7e787b9917d9d3f29ebccb07845ac98c4f"
+          },
+          "engines": {}
+        }
+      ]
+    },
+    {
+      "name": "dsh-hfsy-studio",
+      "title": {
+        "en": "HFSY Image Studio",
+        "zh": "HFSY 生图工作台"
+      },
+      "description": {
+        "en": "A full-page studio inside DSH for OpenAI-compatible image/video relays: prompt panel, result gallery with lightbox and downloads, per-day local output folder and persistent history. Failures stay visible with the relay's original error.",
+        "zh": "在 DSH 里开一个全屏工作台调用 OpenAI 兼容的中转出图/出片：左侧参数（模型、尺寸、质量、数量、画风预设），右侧结果画廊（灯箱、下载、复制落盘路径）与历史记录；失败任务保留中转原始报错，出图按日期落到本地目录。"
+      },
+      "author": "MrLukezy",
+      "homepage": "https://github.com/MrLukezy/dsh-hfsy-studio",
+      "repository": {
+        "url": "https://github.com/MrLukezy/dsh-hfsy-studio"
+      },
+      "metadata": {
+        "category": "media",
+        "keywords": [
+          "image generation",
+          "生图",
+          "文生图",
+          "视频生成",
+          "gpt-image",
+          "hfsy",
+          "super resolution",
+          "media",
+          "gallery",
+          "画廊",
+          "deepseek harness",
+          "dsh",
+          "dsh-plugin"
+        ],
+        "labels": [
+          "image",
+          "media",
+          "ui",
+          "ai"
+        ],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1794542844,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/MrLukezy/dsh-hfsy-studio",
+            "commit": "6a37999518413989dfcd9feef8af68f7631dddc0"
           },
           "engines": {}
         }
