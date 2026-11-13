@@ -27,6 +27,12 @@
           "en": "Media",
           "zh": "图像与媒体"
         }
+      },
+      "ops": {
+        "title": {
+          "en": "Server Ops",
+          "zh": "服务器运维"
+        }
       }
     },
     "labels": {
@@ -70,6 +76,18 @@
         "title": {
           "en": "Image",
           "zh": "生图"
+        }
+      },
+      "ssh": {
+        "title": {
+          "en": "SSH",
+          "zh": "SSH"
+        }
+      },
+      "ops": {
+        "title": {
+          "en": "Server Ops",
+          "zh": "服务器运维"
         }
       }
     },
@@ -345,6 +363,63 @@
             "type": "git",
             "url": "https://github.com/MrLukezy/dsh-hfsy-studio",
             "commit": "6a37999518413989dfcd9feef8af68f7631dddc0"
+          },
+          "engines": {}
+        }
+      ]
+    },
+    {
+      "name": "dsh-cloud-servers",
+      "title": {
+        "en": "Cloud Servers",
+        "zh": "云服务器工作台"
+      },
+      "description": {
+        "en": "Register your cloud servers once and keep them in one panel: grouped inventory with search, one-SSH-round status sampling (uptime, load, CPU, memory, disk, services, ports, mounts, top processes, last login), a connection block where the ssh command, key path, key fingerprint and public key each have a copy button, a command console, and @-mention in the composer so the agent knows exactly which host you mean.",
+        "zh": "把云服务器登记一次，之后都在一个面板里：分组清单可搜索，一次 SSH 往返采集运行时长、负载、CPU、内存、磁盘、服务、端口、挂载点、占用最高的进程与最后登录；连接信息区把 ssh 命令、私钥路径、密钥指纹、公钥各配一个复制按钮；底部可直接执行命令；在对话框敲 @ 就能选中某台机器，模型据此直接动手。"
+      },
+      "author": "MrLukezy",
+      "homepage": "https://github.com/MrLukezy/dsh-cloud-servers",
+      "repository": {
+        "url": "https://github.com/MrLukezy/dsh-cloud-servers"
+      },
+      "metadata": {
+        "category": "ops",
+        "keywords": [
+          "ssh",
+          "cloud server",
+          "云服务器",
+          "服务器",
+          "运维",
+          "server monitor",
+          "监控",
+          "巡检",
+          "ssh key",
+          "密钥",
+          "fingerprint",
+          "指纹",
+          "remote command",
+          "远程命令",
+          "devops",
+          "deepseek harness",
+          "dsh",
+          "dsh-plugin"
+        ],
+        "labels": [
+          "ssh",
+          "ops",
+          "ui"
+        ],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1794561193,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/MrLukezy/dsh-cloud-servers",
+            "commit": "a35229e0ed71a835d0d0185aa8e0af18bf1e2e7e"
           },
           "engines": {}
         }
