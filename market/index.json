@@ -151,8 +151,8 @@
         "zh": "CodeQuest 成就系统"
       },
       "description": {
-        "en": "An achievement game fed by your real DSH usage: 313 achievements over 12 categories read token traffic, tool calls, touched files, models and the tone of your prompts. Most stay sealed until you get close, so the wall reveals itself as you play. Ships a draggable session-page HUD with a live token curve and +N floaters, plus an optional self-hosted leaderboard with 11 boards.",
-        "zh": "用你真实的 DSH 使用量驱动的成就小游戏：12 个分类共 313 枚成就，数据取自 token 流量、工具调用、改过的文件、用过的模型和你说过的话。大部分成就解锁前是「未揭晓」状态，接近达成才会露面，成就墙会随着你的使用一点点亮起来。会话页有可拖动的悬浮卡片（实时曲线 + Token 消耗飘字），还可以接自建排行榜，支持 11 个榜单。"
+        "en": "An achievement game fed by your real DSH usage: 314 achievements over 12 categories read token traffic, tool calls, touched files, models and the tone of your prompts. Most stay sealed until you get close, so the wall reveals itself as you play. Ships a draggable session-page HUD with a live token curve and +N floaters, plus an optional self-hosted leaderboard with 11 boards.",
+        "zh": "用你真实的 DSH 使用量驱动的成就小游戏：12 个分类共 314 枚成就，数据取自 token 流量、工具调用、改过的文件、用过的模型和你说过的话。大部分成就解锁前是「未揭晓」状态，接近达成才会露面，成就墙会随着你的使用一点点亮起来。会话页有可拖动的悬浮卡片（实时曲线 + Token 消耗飘字），还可以接自建排行榜，支持 11 个榜单。"
       },
       "author": "MrLukezy",
       "homepage": "https://github.com/MrLukezy/dsh-codequest",
@@ -188,6 +188,16 @@
         "sortKeys": {}
       },
       "versions": [
+        {
+          "version": "0.10.0",
+          "publishTimestamp": 1794993952,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/MrLukezy/dsh-codequest",
+            "commit": "564c0b4d2d62ac9d430fb6376183d0ec0e047ecd"
+          },
+          "engines": {}
+        },
         {
           "version": "0.9.0",
           "publishTimestamp": 1794490454,
