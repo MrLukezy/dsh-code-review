@@ -189,6 +189,16 @@
       },
       "versions": [
         {
+          "version": "0.11.0",
+          "publishTimestamp": 1795513711,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/MrLukezy/dsh-codequest",
+            "commit": "af6c5f9691fdf9563f5b99e2ef0d7d9d5ddbabcb"
+          },
+          "engines": {}
+        },
+        {
           "version": "0.10.1",
           "publishTimestamp": 1795492899,
           "source": {
